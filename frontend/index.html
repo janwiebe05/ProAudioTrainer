@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ProAudioTrainer — EQ System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style-modules.css">
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════
+       LOGIN SCREEN
+  ═══════════════════════════════════════════ -->
+  <div id="login-screen" class="login-screen">
+    <div class="login-chassis">
+      <div class="login-rack-top">
+        <div class="rack-screw rack-screw--tl"></div>
+        <div class="rack-screw rack-screw--tr"></div>
+        <div class="login-brand">
+          <div class="login-brand-name">PRO AUDIO TRAINER</div>
+          <div class="login-brand-sub">EQ RECOGNITION SYSTEM · MK II</div>
+        </div>
+      </div>
+
+      <div class="login-panel">
+        <div class="login-vu-row">
+          <div class="vu-led-strip" id="login-vu-strip">
+            <span class="vu-led" data-idx="0"></span>
+            <span class="vu-led" data-idx="1"></span>
+            <span class="vu-led" data-idx="2"></span>
+            <span class="vu-led" data-idx="3"></span>
+            <span class="vu-led" data-idx="4"></span>
+            <span class="vu-led" data-idx="5"></span>
+            <span class="vu-led" data-idx="6"></span>
+            <span class="vu-led" data-idx="7"></span>
+            <span class="vu-led vu-led--yellow" data-idx="8"></span>
+            <span class="vu-led vu-led--yellow" data-idx="9"></span>
+            <span class="vu-led vu-led--red" data-idx="10"></span>
+            <span class="vu-led vu-led--red" data-idx="11"></span>
+          </div>
+          <div class="vu-led-strip" id="login-vu-strip-r">
+            <span class="vu-led" data-idx="0"></span>
+            <span class="vu-led" data-idx="1"></span>
+            <span class="vu-led" data-idx="2"></span>
+            <span class="vu-led" data-idx="3"></span>
+            <span class="vu-led" data-idx="4"></span>
+            <span class="vu-led" data-idx="5"></span>
+            <span class="vu-led" data-idx="6"></span>
+            <span class="vu-led" data-idx="7"></span>
+            <span class="vu-led vu-led--yellow" data-idx="8"></span>
+            <span class="vu-led vu-led--yellow" data-idx="9"></span>
+            <span class="vu-led vu-led--red" data-idx="10"></span>
+            <span class="vu-led vu-led--red" data-idx="11"></span>
+          </div>
+        </div>
+
+        <form class="login-form" id="login-form" autocomplete="off">
+          <div class="form-group">
+            <label class="form-label">OPERATOR ID</label>
+            <div class="form-input-wrap">
+              <input type="text" id="login-username" class="form-input" placeholder="username" autocomplete="username">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">ACCESS CODE</label>
+            <div class="form-input-wrap">
+              <input type="password" id="login-password" class="form-input" placeholder="••••••••" autocomplete="current-password">
+            </div>
+          </div>
+          <div class="login-error" id="login-error"></div>
+          <button type="submit" class="btn-rack btn-rack--primary" id="login-btn">
+            <span class="btn-rack-led" id="login-btn-led"></span>
+            SYSTEM ZUGANG
+          </button>
+        </form>
+
+        <div class="login-panel-label">AUTHORIZED PERSONNEL ONLY · UNIT 001</div>
+      </div>
+
+      <div class="login-rack-bottom">
+        <div class="rack-screw rack-screw--bl"></div>
+        <div class="rack-screw rack-screw--br"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════
+       MAIN APP
+  ═══════════════════════════════════════════ -->
+  <div id="app-shell" class="app-shell" style="display:none">
+
+    <!-- Header / Rack Faceplate Top -->
+    <header class="app-header">
+      <div class="header-rack-ears">
+        <div class="rack-ear rack-ear--left">
+          <div class="rack-screw"></div>
+          <div class="rack-screw"></div>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <div class="header-logo">
+          <span class="logo-brand">PRO AUDIO TRAINER</span>
+          <span class="logo-model">EQ SYSTEM MK II</span>
+        </div>
+        <nav class="app-nav">
+          <button class="nav-btn active" data-module="eq-trainer">
+            <span class="nav-btn-led nav-btn-led--green active"></span>
+            EQ TRAINER
+          </button>
+          <button class="nav-btn" data-module="sound-library">
+            <span class="nav-btn-led nav-btn-led--green"></span>
+            SOUND LIBRARY
+          </button>
+          <button class="nav-btn coming-soon" data-module="dynamics" title="Demnächst">
+            <span class="nav-btn-led"></span>
+            DYNAMICS
+          </button>
+          <button class="nav-btn coming-soon" data-module="reverb" title="Demnächst">
+            <span class="nav-btn-led"></span>
+            REVERB
+          </button>
+        </nav>
+      </div>
+
+      <div class="header-right">
+        <div class="vu-meter-compact" id="header-vu">
+          <div class="vu-col">
+            <div class="vu-bar-wrap"><div class="vu-bar-fill" id="vu-fill-l"></div></div>
+            <div class="vu-bar-label">L</div>
+          </div>
+          <div class="vu-col">
+            <div class="vu-bar-wrap"><div class="vu-bar-fill" id="vu-fill-r"></div></div>
+            <div class="vu-bar-label">R</div>
+          </div>
+        </div>
+        <div class="header-user">
+          <span class="header-username" id="header-username">—</span>
+          <button class="btn-rack btn-rack--sm" id="logout-btn">LOGOUT</button>
+        </div>
+      </div>
+
+      <div class="header-rack-ears">
+        <div class="rack-ear rack-ear--right">
+          <div class="rack-screw"></div>
+          <div class="rack-screw"></div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="app-main">
+      <aside class="app-sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-label">MODULE</div>
+          <button class="sidebar-item active" data-module="eq-trainer">
+            <span class="sidebar-led sidebar-led--green active"></span>
+            EQ Training
+          </button>
+          <button class="sidebar-item" data-module="sound-library">
+            <span class="sidebar-led sidebar-led--amber"></span>
+            Sound Library
+          </button>
+          <button class="sidebar-item disabled">
+            <span class="sidebar-led"></span>
+            Dynamics
+          </button>
+          <button class="sidebar-item disabled">
+            <span class="sidebar-led"></span>
+            Reverb
+          </button>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-label">DIFFICULTY</div>
+          <button class="sidebar-item level-item active" id="sidebar-level-1" data-level="1">
+            <span class="sidebar-led sidebar-led--green active"></span>
+            Level I <small>±1 Oct</small>
+          </button>
+          <button class="sidebar-item level-item" id="sidebar-level-2" data-level="2">
+            <span class="sidebar-led sidebar-led--amber"></span>
+            Level II <small>±½ Oct</small>
+          </button>
+          <button class="sidebar-item level-item" id="sidebar-level-3" data-level="3">
+            <span class="sidebar-led sidebar-led--red"></span>
+            Level III <small>±¼ Oct</small>
+          </button>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-label">TOP SCORES</div>
+          <div class="highscore-list" id="highscore-list">
+            <div class="hs-entry"><span class="hs-rank">—</span><span class="hs-name">—</span><span class="hs-score">—</span></div>
+          </div>
+        </div>
+      </aside>
+
+      <div class="app-content">
+        <div id="main-content"></div>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <div class="footer-rack-ears">
+        <div class="rack-ear rack-ear--left">
+          <div class="rack-screw"></div>
+          <div class="rack-screw"></div>
+        </div>
+      </div>
+      <div class="footer-center">
+        <div class="shortcuts">
+          <span class="shortcut"><kbd>SPACE</kbd> Play/Stop</span>
+          <span class="shortcut"><kbd>B</kbd> A/B Toggle</span>
+          <span class="shortcut"><kbd>N</kbd> Neue Runde</span>
+          <span class="shortcut"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> Level</span>
+        </div>
+        <div class="footer-right">
+          <span class="panel-label">PRO AUDIO TRAINER · v2.0</span>
+        </div>
+      </div>
+      <div class="footer-rack-ears">
+        <div class="rack-ear rack-ear--right">
+          <div class="rack-screw"></div>
+          <div class="rack-screw"></div>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toast-container"></div>
+
+  </div>
+
+  <script>
+    const MODULE_REGISTRY = {};
+    function registerModule(id, cls) { MODULE_REGISTRY[id] = cls; }
+  </script>
+  <script src="modules/eq-trainer.js"></script>
+  <script src="modules/sound-library.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
