@@ -13,6 +13,7 @@ const adminRoutes    = require('./routes/admin');
 const reverbRoutes   = require('./routes/reverb');
 const panningRoutes  = require('./routes/panning');
 const eqMatchRoutes  = require('./routes/eq-match');
+const errorHandler   = require('./middleware/errorHandler');
 
 // Ensure data directory exists
 const dataDir = path.join(__dirname, 'data');
@@ -57,6 +58,9 @@ app.use('/api/eq-match', eqMatchRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// Centralized error handler — must be LAST
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
