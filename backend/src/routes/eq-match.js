@@ -113,8 +113,10 @@ router.get('/random', authMiddleware, (req, res) => {
   const config = LEVEL_CONFIG[level];
 
   const library = loadLibrary();
-  const active = library.filter(e => e.active);
-  const pool = active.length > 0 ? active : library;
+  // Respect per-user access: shared (ownerId null) + own entries
+  const accessible = library.filter(e => e.ownerId === null || e.ownerId === req.user.username);
+  const active = accessible.filter(e => e.active);
+  const pool = active.length > 0 ? active : accessible;
   if (pool.length === 0) return res.status(404).json({ error: 'Keine Audiodateien in der Library' });
 
   const audio = pick(pool);
