@@ -15,6 +15,11 @@ class SoundLibraryModule {
   }
 
   render() {
+    const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
+    const uploadLabel = isAdmin
+      ? 'Zur geteilten Bibliothek hinzufügen'
+      : 'Zu meiner Bibliothek hinzufügen';
+
     this.container.innerHTML = `
       <div class="sound-library">
         <div class="lib-header">
@@ -26,8 +31,8 @@ class SoundLibraryModule {
           <input type="file" id="lib-file-input" accept=".wav,.mp3,.ogg,.flac,.aiff,.aif,.m4a" multiple style="display:none">
           <div class="upload-inner">
             <div class="upload-icon">⬇</div>
-            <p class="upload-text">Drag files here or click to select</p>
-            <p class="upload-sub">Supports WAV, MP3, OGG, FLAC, AIFF, M4A</p>
+            <p class="upload-text">${this.escape(uploadLabel)}</p>
+            <p class="upload-sub">Drag files here or click to select — Supports WAV, MP3, OGG, FLAC, AIFF, M4A</p>
           </div>
         </div>
 
@@ -120,6 +125,9 @@ class SoundLibraryModule {
     const activeEl = this.container.querySelector('#stat-active');
     const sizeEl = this.container.querySelector('#stat-size');
 
+    const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
+    const currentUsername = CURRENT_USER && CURRENT_USER.username;
+
     countEl.textContent = this.library.length;
     activeEl.textContent = this.library.filter(f => f.active).length;
 
@@ -132,25 +140,42 @@ class SoundLibraryModule {
       return;
     }
 
-    listEl.innerHTML = this.library.map(file => `
-      <div class="lib-file-item">
-        <div class="file-info">
-          <div class="file-name">${this.escape(file.originalName)}</div>
-          <div class="file-meta">
-            <span class="file-size">${(file.size / 1024 / 1024).toFixed(1)} MB</span>
-            <span class="file-duration">${file.duration ? (file.duration / 60).toFixed(1) + ' min' : '—'}</span>
-            <span class="file-date">${new Date(file.uploadedAt).toLocaleDateString('de-DE')}</span>
+    listEl.innerHTML = this.library.map(file => {
+      // Ownership badge
+      const isShared = file.ownerId === null;
+      const isOwner = file.ownerId === currentUsername;
+      const badgeClass = isShared ? 'badge-shared' : 'badge-mine';
+      const badgeLabel = isShared ? 'Shared' : 'Meine Bibliothek';
+
+      // Delete button: visible for admin OR owner of private file
+      const canDelete = isAdmin || isOwner;
+      const deleteBtn = canDelete
+        ? `<button class="btn-rack btn-rack--sm btn-delete" data-id="${file.id}">DELETE</button>`
+        : '';
+
+      return `
+        <div class="lib-file-item">
+          <div class="file-info">
+            <div class="file-name">
+              ${this.escape(file.originalName)}
+              <span class="lib-badge ${badgeClass}">${badgeLabel}</span>
+            </div>
+            <div class="file-meta">
+              <span class="file-size">${(file.size / 1024 / 1024).toFixed(1)} MB</span>
+              <span class="file-duration">${file.duration ? (file.duration / 60).toFixed(1) + ' min' : '—'}</span>
+              <span class="file-date">${new Date(file.uploadedAt).toLocaleDateString('de-DE')}</span>
+            </div>
+          </div>
+          <div class="file-actions">
+            <button class="btn-rack btn-rack--sm btn-play" data-id="${file.id}">PLAY</button>
+            <button class="btn-rack btn-rack--sm btn-toggle-active ${file.active ? 'active' : ''}" data-id="${file.id}">
+              ${file.active ? 'ACTIVE' : 'INACTIVE'}
+            </button>
+            ${deleteBtn}
           </div>
         </div>
-        <div class="file-actions">
-          <button class="btn-rack btn-rack--sm btn-play" data-id="${file.id}">PLAY</button>
-          <button class="btn-rack btn-rack--sm btn-toggle-active ${file.active ? 'active' : ''}" data-id="${file.id}">
-            ${file.active ? 'ACTIVE' : 'INACTIVE'}
-          </button>
-          <button class="btn-rack btn-rack--sm btn-delete" data-id="${file.id}">DELETE</button>
-        </div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
 
     // Event listeners für die Buttons
     listEl.querySelectorAll('.btn-play').forEach(btn => {
@@ -224,3 +249,4 @@ class SoundLibraryModule {
 }
 
 registerModule('sound-library', SoundLibraryModule);
+

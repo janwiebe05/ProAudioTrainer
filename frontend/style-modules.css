@@ -637,6 +637,35 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Ownership badges for Sound Library */
+.lib-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.badge-shared {
+  background: rgba(150, 150, 150, 0.15);
+  color: #aaa;
+  border: 1px solid rgba(150, 150, 150, 0.3);
+}
+
+.badge-mine {
+  background: rgba(180, 140, 40, 0.15);
+  color: #c9a84c;
+  border: 1px solid rgba(180, 140, 40, 0.35);
 }
 
 .file-meta {
