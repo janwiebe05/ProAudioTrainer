@@ -2,21 +2,20 @@
 
 const express = require('express');
 const router = express.Router();
-const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const authMiddleware = require('../middleware/auth');
+const { readJSON, writeJSON } = require('../utils/jsonStore');
 
 const USERS_FILE = path.join(__dirname, '..', 'data', 'users.json');
 
 function loadUsers() {
-  try { return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8')); }
-  catch { return []; }
+  return readJSON(USERS_FILE, []);
 }
 
-function saveUsers(data) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
+async function saveUsers(data) {
+  await writeJSON(USERS_FILE, data);
 }
 
 function adminOnly(req, res, next) {
@@ -31,7 +30,7 @@ router.get('/users', authMiddleware, adminOnly, (req, res) => {
 });
 
 // POST /api/admin/users — neuen User anlegen
-router.post('/users', authMiddleware, adminOnly, (req, res) => {
+router.post('/users', authMiddleware, adminOnly, async (req, res) => {
   const { username, password, role } = req.body;
 
   if (!username || !password) {
@@ -55,14 +54,14 @@ router.post('/users', authMiddleware, adminOnly, (req, res) => {
     createdAt: new Date().toISOString(),
   };
   users.push(newUser);
-  saveUsers(users);
+  await saveUsers(users);
 
   const { passwordHash, ...safe } = newUser;
   res.status(201).json(safe);
 });
 
 // DELETE /api/admin/users/:id — User löschen
-router.delete('/users/:id', authMiddleware, adminOnly, (req, res) => {
+router.delete('/users/:id', authMiddleware, adminOnly, async (req, res) => {
   if (req.user.sub === req.params.id || req.user.id === req.params.id) {
     return res.status(400).json({ error: 'Eigenen Account nicht löschbar' });
   }
@@ -70,12 +69,12 @@ router.delete('/users/:id', authMiddleware, adminOnly, (req, res) => {
   const idx = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'User nicht gefunden' });
   users.splice(idx, 1);
-  saveUsers(users);
+  await saveUsers(users);
   res.json({ deleted: true });
 });
 
 // PATCH /api/admin/users/:id/password — Passwort zurücksetzen
-router.patch('/users/:id/password', authMiddleware, adminOnly, (req, res) => {
+router.patch('/users/:id/password', authMiddleware, adminOnly, async (req, res) => {
   const { password } = req.body;
   if (!password || password.length < 6) {
     return res.status(400).json({ error: 'Passwort muss mindestens 6 Zeichen lang sein' });
@@ -84,7 +83,7 @@ router.patch('/users/:id/password', authMiddleware, adminOnly, (req, res) => {
   const user = users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'User nicht gefunden' });
   user.passwordHash = bcrypt.hashSync(password, 10);
-  saveUsers(users);
+  await saveUsers(users);
   res.json({ updated: true });
 });
 

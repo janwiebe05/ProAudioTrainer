@@ -5,14 +5,14 @@ const router  = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const authMiddleware = require('../middleware/auth');
 const path = require('path');
-const fs   = require('fs');
+const { readJSON } = require('../utils/jsonStore');
 
 const LIBRARY_FILE = path.join(__dirname, '..', 'data', 'library.json');
 const EXERCISE_TTL = 30 * 60 * 1000;
 const exerciseStore = new Map();
 
 function loadLibrary() {
-  try { return JSON.parse(fs.readFileSync(LIBRARY_FILE, 'utf8')); } catch { return []; }
+  return readJSON(LIBRARY_FILE, []);
 }
 function purgeExpired() {
   const now = Date.now();

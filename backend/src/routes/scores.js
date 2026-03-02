@@ -2,24 +2,23 @@
 
 const express = require('express');
 const router = express.Router();
-const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const authMiddleware = require('../middleware/auth');
+const { readJSON, writeJSON } = require('../utils/jsonStore');
 
 const SCORES_FILE = path.join(__dirname, '..', 'data', 'scores.json');
 
 function loadScores() {
-  try { return JSON.parse(fs.readFileSync(SCORES_FILE, 'utf8')); }
-  catch { return []; }
+  return readJSON(SCORES_FILE, []);
 }
 
-function saveScores(data) {
-  fs.writeFileSync(SCORES_FILE, JSON.stringify(data, null, 2));
+async function saveScores(data) {
+  await writeJSON(SCORES_FILE, data);
 }
 
 // POST /api/scores — Score speichern
-router.post('/', authMiddleware, (req, res) => {
+router.post('/', authMiddleware, async (req, res) => {
   const { score, rounds, level, streak } = req.body;
   if (score === undefined || score === null) {
     return res.status(400).json({ error: 'Score fehlt' });
@@ -36,7 +35,7 @@ router.post('/', authMiddleware, (req, res) => {
     date: new Date().toISOString()
   };
   scores.push(entry);
-  saveScores(scores);
+  await saveScores(scores);
   res.json(entry);
 });
 

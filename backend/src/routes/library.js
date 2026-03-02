@@ -7,17 +7,17 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const authMiddleware = require('../middleware/auth');
+const { readJSON, writeJSON } = require('../utils/jsonStore');
 
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 const LIBRARY_FILE = path.join(__dirname, '..', 'data', 'library.json');
 
 function loadLibrary() {
-  try { return JSON.parse(fs.readFileSync(LIBRARY_FILE, 'utf8')); }
-  catch { return []; }
+  return readJSON(LIBRARY_FILE, []);
 }
 
-function saveLibrary(data) {
-  fs.writeFileSync(LIBRARY_FILE, JSON.stringify(data, null, 2));
+async function saveLibrary(data) {
+  await writeJSON(LIBRARY_FILE, data);
 }
 
 // Multer storage

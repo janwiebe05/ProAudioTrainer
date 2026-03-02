@@ -2,18 +2,17 @@
 
 const express = require('express');
 const router = express.Router();
-const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { readJSON } = require('../utils/jsonStore');
 
 const USERS_FILE = path.join(__dirname, '..', 'data', 'users.json');
 const JWT_SECRET = process.env.JWT_SECRET || 'proaudio-secret-change-in-prod';
 const JWT_EXPIRES = '24h';
 
 function loadUsers() {
-  try { return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8')); }
-  catch { return []; }
+  return readJSON(USERS_FILE, []);
 }
 
 // POST /api/auth/login
