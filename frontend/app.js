@@ -66,6 +66,8 @@ class HighscoreManager {
 }
 
 // ─── Main Application ─────────────────────────────────────────────────────────
+// MODULE_REGISTRY is populated by each module file via registerModule()
+
 class App {
   constructor() {
     this.audioContext = null;
@@ -111,6 +113,11 @@ class App {
     document.getElementById('app-shell').style.display = 'flex';
     document.getElementById('header-username').textContent = CURRENT_USER?.username || '—';
     this.stopLoginVU();
+    const isAdmin = CURRENT_USER?.role === 'admin';
+    const navAdminBtn = document.getElementById('nav-admin-btn');
+    const sidebarAdminBtn = document.getElementById('sidebar-admin-btn');
+    if (navAdminBtn) navAdminBtn.style.display = isAdmin ? '' : 'none';
+    if (sidebarAdminBtn) sidebarAdminBtn.style.display = isAdmin ? '' : 'none';
     this.loadModule('eq-trainer');
     this.startHeaderVU();
     this.loadHighscores();
@@ -247,6 +254,12 @@ class App {
     document.querySelectorAll('.level-item').forEach(btn => {
       btn.addEventListener('click', () => {
         const level = parseInt(btn.dataset.level, 10);
+        document.querySelectorAll('.level-item').forEach(b => {
+          b.classList.remove('active');
+          b.querySelector('.sidebar-led')?.classList.remove('active');
+        });
+        btn.classList.add('active');
+        btn.querySelector('.sidebar-led')?.classList.add('active');
         if (this.currentModule && typeof this.currentModule.setLevel === 'function') {
           this.currentModule.setLevel(level);
         }

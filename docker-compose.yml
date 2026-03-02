@@ -33,6 +33,7 @@ services:
       - backend
     networks:
       - proaudio-net
+      - nginx-proxy-manager_default
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/"]
       interval: 10s
@@ -42,3 +43,5 @@ services:
 networks:
   proaudio-net:
     driver: bridge
+  nginx-proxy-manager_default:
+    external: true

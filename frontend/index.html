@@ -115,13 +115,25 @@
             <span class="nav-btn-led nav-btn-led--green"></span>
             SOUND LIBRARY
           </button>
-          <button class="nav-btn coming-soon" data-module="dynamics" title="Demnächst">
-            <span class="nav-btn-led"></span>
+          <button class="nav-btn" data-module="dynamics-trainer">
+            <span class="nav-btn-led nav-btn-led--green"></span>
             DYNAMICS
           </button>
-          <button class="nav-btn coming-soon" data-module="reverb" title="Demnächst">
-            <span class="nav-btn-led"></span>
+          <button class="nav-btn" data-module="reverb-trainer">
+            <span class="nav-btn-led nav-btn-led--green"></span>
             REVERB
+          </button>
+          <button class="nav-btn" data-module="panning-trainer">
+            <span class="nav-btn-led nav-btn-led--green"></span>
+            PANNING
+          </button>
+          <button class="nav-btn" data-module="eq-match-trainer">
+            <span class="nav-btn-led nav-btn-led--green"></span>
+            EQ MATCH
+          </button>
+          <button class="nav-btn" data-module="admin" id="nav-admin-btn" style="display:none">
+            <span class="nav-btn-led"></span>
+            ADMIN
           </button>
         </nav>
       </div>
@@ -164,13 +176,25 @@
             <span class="sidebar-led sidebar-led--amber"></span>
             Sound Library
           </button>
-          <button class="sidebar-item disabled">
-            <span class="sidebar-led"></span>
+          <button class="sidebar-item" data-module="dynamics-trainer">
+            <span class="sidebar-led sidebar-led--green"></span>
             Dynamics
           </button>
-          <button class="sidebar-item disabled">
-            <span class="sidebar-led"></span>
+          <button class="sidebar-item" data-module="reverb-trainer">
+            <span class="sidebar-led sidebar-led--green"></span>
             Reverb
+          </button>
+          <button class="sidebar-item" data-module="panning-trainer">
+            <span class="sidebar-led sidebar-led--green"></span>
+            Panning
+          </button>
+          <button class="sidebar-item" data-module="eq-match-trainer">
+            <span class="sidebar-led sidebar-led--green"></span>
+            EQ Match
+          </button>
+          <button class="sidebar-item" data-module="admin" id="sidebar-admin-btn" style="display:none">
+            <span class="sidebar-led" style="background:var(--led-red);box-shadow:0 0 6px rgba(255,82,82,0.5)"></span>
+            Admin
           </button>
         </div>
 
@@ -236,11 +260,17 @@
   </div>
 
   <script>
-    const MODULE_REGISTRY = {};
+    var MODULE_REGISTRY = {};
     function registerModule(id, cls) { MODULE_REGISTRY[id] = cls; }
   </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
   <script src="modules/eq-trainer.js"></script>
   <script src="modules/sound-library.js"></script>
+  <script src="modules/dynamics-trainer.js"></script>
+  <script src="modules/reverb-trainer.js"></script>
+  <script src="modules/panning-trainer.js"></script>
+  <script src="modules/eq-match-trainer.js"></script>
+  <script src="modules/admin-panel.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

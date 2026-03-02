@@ -47,13 +47,12 @@ class GameState {
   }
 
   getRandomTargetFreq(freqMin = 20, freqMax = 20000) {
-    const targets = [
-      32, 45, 63, 90, 100, 125, 180, 200, 250, 300, 360, 400, 500, 600, 720, 800,
-      1000, 1200, 1400, 1600, 2000, 2800, 3200, 4000, 5600, 6400, 8000, 11200, 12800, 16000
-    ];
-    const pool = targets.filter(f => f >= freqMin && f <= freqMax);
-    const src = pool.length > 0 ? pool : targets;
-    return src[Math.floor(Math.random() * src.length)];
+    // True random on log scale within the user-defined range
+    const logMin = Math.log2(freqMin);
+    const logMax = Math.log2(freqMax);
+    const logFreq = logMin + Math.random() * (logMax - logMin);
+    // Round to nearest musically meaningful value (semitone grid)
+    return Math.round(Math.pow(2, Math.round(logFreq * 12) / 12));
   }
 
   reset() {
@@ -99,31 +98,13 @@ class FrequencyScale {
     return Math.pow(10, logMin + normalized * (logMax - logMin));
   }
 
-  // analyserData is always the DRY (bypass) signal — EQ state has no visual effect
-  draw(analyserData, gameState, mouseX) {
+  draw(gameState, mouseX) {
     const ctx = this.ctx;
     const w = this.canvas.width;
     const h = this.canvas.height;
 
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(0, 0, w, h);
-
-    // Spectrum: always dry signal, never shows EQ coloration
-    if (analyserData) {
-      ctx.fillStyle = 'rgba(76, 175, 80, 0.15)';
-      ctx.beginPath();
-      ctx.moveTo(this.padding.left, this.padding.top + this.height);
-      for (let i = 0; i < analyserData.length; i++) {
-        const freq = this.freqMin * Math.pow(this.freqMax / this.freqMin, i / (analyserData.length - 1));
-        const x = this.freqToX(freq);
-        const magnitude = analyserData[i] / 255;
-        const y = this.padding.top + this.height - magnitude * this.height;
-        ctx.lineTo(x, y);
-      }
-      ctx.lineTo(this.padding.left + this.width, this.padding.top + this.height);
-      ctx.closePath();
-      ctx.fill();
-    }
 
     // Grid lines and freq labels
     ctx.strokeStyle = '#3a3a3a';
@@ -209,16 +190,6 @@ class AudioEngine {
     this.masterGain = this.ctx.createGain();
     this.analyser = this.ctx.createAnalyser();
 
-    // Separate analyser tapping the raw source — always dry, ignores EQ state
-    this.dryAnalyser = this.ctx.createAnalyser();
-    this.dryAnalyser.fftSize = 2048;
-    this.dryAnalyser.smoothingTimeConstant = 0.8;
-    // Connect through a silent gain so the node is part of the active audio graph
-    this.silentGain = this.ctx.createGain();
-    this.silentGain.gain.value = 0;
-    this.dryAnalyser.connect(this.silentGain);
-    this.silentGain.connect(this.ctx.destination);
-
     this.dryGain.gain.value = 1.0;
     this.wetGain.gain.value = 0.0;
     this.gainCompensation.gain.value = Math.pow(10, -2.5 / 20);
@@ -227,8 +198,8 @@ class AudioEngine {
     this.analyser.smoothingTimeConstant = 0.8;
 
     this.biquadFilter.type = 'peaking';
-    this.biquadFilter.Q.value = 2.0;
-    this.biquadFilter.gain.value = 9;
+    this.biquadFilter.Q.value = 4.0;   // narrow enough to be clearly audible
+    this.biquadFilter.gain.value = 12; // +12 dB — unmistakable peak
 
     // Main audio graph: dry + wet paths → masterGain → analyser → destination
     this.dryGain.connect(this.masterGain);
@@ -259,7 +230,6 @@ class AudioEngine {
     this.sourceNode.loop = true;
     this.sourceNode.connect(this.dryGain);
     this.sourceNode.connect(this.wetGain);
-    this.sourceNode.connect(this.dryAnalyser); // tap for dry visualization
     this.sourceNode.start(0);
     this.isPlaying = true;
   }
@@ -298,13 +268,6 @@ class AudioEngine {
     this.biquadFilter.frequency.setValueAtTime(freq, this.ctx.currentTime);
   }
 
-  // Returns dry signal FFT data — canvas always shows unprocessed spectrum
-  getAnalyserData() {
-    const data = new Uint8Array(this.dryAnalyser.frequencyBinCount);
-    this.dryAnalyser.getByteFrequencyData(data);
-    return data;
-  }
-
   destroy() {
     this.stop();
     this.dryGain.disconnect();
@@ -313,8 +276,6 @@ class AudioEngine {
     this.gainCompensation.disconnect();
     this.masterGain.disconnect();
     this.analyser.disconnect();
-    this.dryAnalyser.disconnect();
-    this.silentGain.disconnect();
   }
 }
 
@@ -342,7 +303,7 @@ class EQTrainerModule {
     this.startRenderLoop();
     this.setupKeyboard();
     this.hsManager.renderTo('highscore-list');
-    // no auto-start — user must click START for the first round
+    this.updateUI();
   }
 
   render() {
@@ -536,6 +497,9 @@ class EQTrainerModule {
       const fileInfo = await apiCall('GET', '/library/random');
       this.gameState.currentAudioFile = fileInfo;
 
+      const statusEl = this.container.querySelector('#status-text');
+      if (statusEl) statusEl.textContent = 'Lade Audio…';
+
       const audioRes = await fetch(`/api/library/${fileInfo.id}/audio`, {
         headers: { 'Authorization': `Bearer ${TOKEN}` }
       });
@@ -561,7 +525,7 @@ class EQTrainerModule {
       this.audioEngine.setEQFrequency(this.gameState.targetFreq);
 
       if (loadingEl) loadingEl.style.display = 'none';
-      this.enterGuessing(); // immediately enter guessing — no "listening" phase
+      this.enterGuessing();
 
     } catch (err) {
       if (loadingEl) loadingEl.style.display = 'none';
@@ -766,8 +730,7 @@ class EQTrainerModule {
   startRenderLoop() {
     const loop = () => {
       if (this.freqScale && this.container.querySelector('#freq-canvas')) {
-        const analyserData = this.audioEngine ? this.audioEngine.getAnalyserData() : null;
-        this.freqScale.draw(analyserData, this.gameState, this.mouseX);
+        this.freqScale.draw(this.gameState, this.mouseX);
       }
       this.rafId = requestAnimationFrame(loop);
     };

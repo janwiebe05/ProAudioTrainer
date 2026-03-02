@@ -8,6 +8,11 @@ const fs = require('fs');
 const authRoutes = require('./routes/auth');
 const libraryRoutes = require('./routes/library');
 const scoresRoutes = require('./routes/scores');
+const dynamicsRoutes = require('./routes/dynamics');
+const adminRoutes    = require('./routes/admin');
+const reverbRoutes   = require('./routes/reverb');
+const panningRoutes  = require('./routes/panning');
+const eqMatchRoutes  = require('./routes/eq-match');
 
 // Ensure data directory exists
 const dataDir = path.join(__dirname, 'data');
@@ -44,6 +49,11 @@ app.use(express.json({ limit: '10mb' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/library', libraryRoutes);
 app.use('/api/scores', scoresRoutes);
+app.use('/api/dynamics', dynamicsRoutes);
+app.use('/api/admin',   adminRoutes);
+app.use('/api/reverb',   reverbRoutes);
+app.use('/api/panning',  panningRoutes);
+app.use('/api/eq-match', eqMatchRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
