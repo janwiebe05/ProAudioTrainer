@@ -95,6 +95,7 @@ class ReverbTrainer {
             </div>
             <div class="action-panel">
               <button class="btn-rack btn-rack--primary" id="rev-btn-restart">NEU STARTEN</button>
+              <button class="btn-rack" id="rev-btn-close">SCHLIESSEN</button>
             </div>
           </div>
         </div>
@@ -113,6 +114,10 @@ class ReverbTrainer {
     $('#rev-btn-skip').addEventListener('click',   () => this.skipRound());
     $('#rev-btn-next').addEventListener('click',   () => this.nextRound());
     $('#rev-btn-restart').addEventListener('click',() => this.restart());
+    $('#rev-btn-close').addEventListener('click', () => {
+      this.container.querySelector('#rev-gameover').style.display = 'none';
+      this.restart(); this.phase = 'idle';
+    });
   }
 
   renderCategoryButtons(categories) {
@@ -355,8 +360,10 @@ class ReverbTrainer {
   }
 
   async showGameOver() {
+    if (this._scoreSubmitted) return;
+    this._scoreSubmitted = true;
     this.stopAudio(); this.stopTimer(); this.phase = 'gameover';
-    try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak }); } catch {}
+    try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'reverb' }); } catch {}
     const overlay = this.container.querySelector('#rev-gameover');
     overlay.style.display = 'flex';
     this.container.querySelector('#rev-final-score').textContent  = this.score;
@@ -366,6 +373,7 @@ class ReverbTrainer {
   }
 
   restart() {
+    this._scoreSubmitted = false;
     this._destroyed = false;
     const overlay = this.container.querySelector('#rev-gameover');
     if (overlay) overlay.style.display = 'none';

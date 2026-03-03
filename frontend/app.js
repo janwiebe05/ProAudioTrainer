@@ -35,9 +35,9 @@ function showToast(message, type = 'info', duration = 3000) {
 
 // ─── Highscore Manager ────────────────────────────────────────────────────────
 class HighscoreManager {
-  async submit(score, rounds, level, streak) {
+  async submit(score, rounds, level, streak, module = 'eq') {
     try {
-      await apiCall('POST', '/scores', { score, rounds, level, streak });
+      await apiCall('POST', '/scores', { score, rounds, level, streak, module });
     } catch (err) {
       console.warn('Score submit error:', err.message);
     }
@@ -118,6 +118,8 @@ class App {
     const sidebarAdminBtn = document.getElementById('sidebar-admin-btn');
     if (navAdminBtn) navAdminBtn.style.display = isAdmin ? '' : 'none';
     if (sidebarAdminBtn) sidebarAdminBtn.style.display = isAdmin ? '' : 'none';
+    const sidebarSystemSection = document.getElementById('sidebar-system-section');
+    if (sidebarSystemSection) sidebarSystemSection.style.display = isAdmin ? '' : 'none';
     this.loadModule('eq-trainer');
     this.startHeaderVU();
     this.loadHighscores();
@@ -217,6 +219,53 @@ class App {
       }
     });
 
+    // Change Password Modal
+    document.getElementById('change-password-btn').addEventListener('click', () => {
+      document.getElementById('cp-current').value = '';
+      document.getElementById('cp-new').value = '';
+      document.getElementById('cp-confirm').value = '';
+      document.getElementById('cp-error').textContent = '';
+      const modal = document.getElementById('change-password-modal');
+      modal.style.display = 'flex';
+    });
+
+    document.getElementById('cp-cancel').addEventListener('click', () => {
+      document.getElementById('change-password-modal').style.display = 'none';
+    });
+
+    document.getElementById('change-password-modal').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) {
+        e.currentTarget.style.display = 'none';
+      }
+    });
+
+    document.getElementById('change-password-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const current = document.getElementById('cp-current').value;
+      const newPw   = document.getElementById('cp-new').value;
+      const confirm = document.getElementById('cp-confirm').value;
+      const errorEl = document.getElementById('cp-error');
+
+      errorEl.textContent = '';
+
+      if (newPw.length < 6) {
+        errorEl.textContent = 'Neues Passwort muss mindestens 6 Zeichen lang sein.';
+        return;
+      }
+      if (newPw !== confirm) {
+        errorEl.textContent = 'Passwörter stimmen nicht überein.';
+        return;
+      }
+
+      try {
+        await apiCall('POST', '/auth/change-password', { currentPassword: current, newPassword: newPw });
+        document.getElementById('change-password-modal').style.display = 'none';
+        showToast('Passwort erfolgreich geändert.', 'success');
+      } catch (err) {
+        errorEl.textContent = err.message;
+      }
+    });
+
     // Logout
     document.getElementById('logout-btn').addEventListener('click', () => {
       TOKEN = null;
@@ -234,7 +283,7 @@ class App {
       this.showLogin();
     });
 
-    // Nav module buttons
+    // Nav module buttons (header nav removed, kept for backwards compat if any remain)
     document.querySelectorAll('.nav-btn[data-module]').forEach(btn => {
       btn.addEventListener('click', () => {
         if (btn.classList.contains('coming-soon')) return;

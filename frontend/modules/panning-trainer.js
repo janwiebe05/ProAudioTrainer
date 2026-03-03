@@ -112,6 +112,7 @@ class PanningTrainer {
             </div>
             <div class="action-panel">
               <button class="btn-rack btn-rack--primary" id="pan-btn-restart">NEU STARTEN</button>
+              <button class="btn-rack" id="pan-btn-close">SCHLIESSEN</button>
             </div>
           </div>
         </div>
@@ -130,6 +131,10 @@ class PanningTrainer {
     $('#pan-btn-skip').addEventListener('click',    () => this.skipRound());
     $('#pan-btn-next').addEventListener('click',    () => this.nextRound());
     $('#pan-btn-restart').addEventListener('click', () => this.restart());
+    $('#pan-btn-close').addEventListener('click', () => {
+      this.container.querySelector('#pan-gameover').style.display = 'none';
+      this.restart(); this.phase = 'idle';
+    });
 
     const slider = $('#pan-slider');
     const sliderVal = $('#pan-slider-val');
@@ -393,8 +398,10 @@ class PanningTrainer {
   }
 
   async showGameOver() {
+    if (this._scoreSubmitted) return;
+    this._scoreSubmitted = true;
     this.stopAudio(); this.stopTimer(); this.phase = 'gameover';
-    try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak }); } catch {}
+    try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'panning' }); } catch {}
     const overlay = this.container.querySelector('#pan-gameover');
     overlay.style.display = 'flex';
     this.container.querySelector('#pan-final-score').textContent = this.score;
@@ -404,6 +411,7 @@ class PanningTrainer {
   }
 
   restart() {
+    this._scoreSubmitted = false;
     this._destroyed = false;
     const overlay = this.container.querySelector('#pan-gameover');
     if (overlay) overlay.style.display = 'none';

@@ -20,6 +20,7 @@ module.exports = {
       rounds: scoreData.rounds || 0,
       level: scoreData.level || 1,
       streak: scoreData.streak || 0,
+      module: scoreData.module || 'eq',
       date: new Date().toISOString(),
     };
 

@@ -8,13 +8,14 @@ const scoreService = require('../services/scoreService');
 // POST /api/scores — Score speichern
 router.post('/', authMiddleware, async (req, res, next) => {
   try {
-    const { score, rounds, level, streak } = req.body;
+    const { score, rounds, level, streak, module: moduleName } = req.body;
     const entry = await scoreService.submitScore({
       username: req.user.username,
       score,
       rounds,
       level,
       streak,
+      module: moduleName,
     });
     res.json(entry);
   } catch (err) {

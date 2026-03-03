@@ -390,7 +390,10 @@ class EQTrainerModule {
           <div class="gameover-final-score" id="final-score">0</div>
           <div class="gameover-label">FINAL SCORE</div>
           <div class="gameover-stats" id="final-stats"></div>
-          <button class="btn-rack btn-rack--primary" id="btn-play-again">PLAY AGAIN</button>
+          <div class="action-panel">
+            <button class="btn-rack btn-rack--primary" id="btn-play-again">NEU STARTEN</button>
+            <button class="btn-rack" id="btn-go-close">SCHLIESSEN</button>
+          </div>
         </div>
       </div>
     `;
@@ -428,6 +431,10 @@ class EQTrainerModule {
 
     this.container.querySelector('#btn-restart').addEventListener('click', () => this.restartGame());
     this.container.querySelector('#btn-play-again').addEventListener('click', () => this.restartGame());
+    this.container.querySelector('#btn-go-close').addEventListener('click', () => {
+      this.container.querySelector('#gameover-overlay').style.display = 'none';
+      this.gameState.phase = 'idle';
+    });
 
     // Freq range selects — initialise from saved values, persist on change
     const minSelect = this.container.querySelector('#freq-min-select');
@@ -635,7 +642,7 @@ class EQTrainerModule {
     if (this.audioEngine) this.audioEngine.stop();
     if (this.timerInterval) clearInterval(this.timerInterval);
 
-    this.hsManager.submit(this.gameState.sessionScore, this.gameState.round, this.gameState.level, this.gameState.streak)
+    this.hsManager.submit(this.gameState.sessionScore, this.gameState.round, this.gameState.level, this.gameState.streak, 'eq')
       .then(() => this.hsManager.renderTo('highscore-list'));
 
     const overlay = this.container.querySelector('#gameover-overlay');

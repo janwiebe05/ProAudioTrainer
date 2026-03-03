@@ -78,6 +78,37 @@ module.exports = {
   },
 
   /**
+   * Change password for authenticated user.
+   */
+  changePassword: async (userId, currentPassword, newPassword) => {
+    requireFields({ currentPassword, newPassword }, ['currentPassword', 'newPassword']);
+
+    if (newPassword.length < 6) {
+      const err = new Error('Neues Passwort muss mindestens 6 Zeichen lang sein');
+      err.status = 400;
+      throw err;
+    }
+
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      const err = new Error('User nicht gefunden');
+      err.status = 404;
+      throw err;
+    }
+
+    const valid = bcrypt.compareSync(currentPassword, user.passwordHash);
+    if (!valid) {
+      const err = new Error('Aktuelles Passwort ist falsch');
+      err.status = 401;
+      throw err;
+    }
+
+    const passwordHash = bcrypt.hashSync(newPassword, 10);
+    await userRepository.updateById(userId, { passwordHash });
+    return { success: true };
+  },
+
+  /**
    * Verify a JWT token.
    * @param {string} token
    * @returns {{ valid: boolean, username?: string, role?: string }}

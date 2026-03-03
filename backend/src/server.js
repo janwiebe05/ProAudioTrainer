@@ -12,8 +12,11 @@ const dynamicsRoutes = require('./routes/dynamics');
 const adminRoutes    = require('./routes/admin');
 const reverbRoutes   = require('./routes/reverb');
 const panningRoutes  = require('./routes/panning');
-const eqMatchRoutes  = require('./routes/eq-match');
-const errorHandler   = require('./middleware/errorHandler');
+const eqMatchRoutes    = require('./routes/eq-match');
+const progressRoutes   = require('./routes/progress');
+const stereoRoutes     = require('./routes/stereo');
+const transientRoutes  = require('./routes/transient');
+const errorHandler     = require('./middleware/errorHandler');
 
 // Ensure data directory exists
 const dataDir = path.join(__dirname, 'data');
@@ -55,6 +58,9 @@ app.use('/api/admin',   adminRoutes);
 app.use('/api/reverb',   reverbRoutes);
 app.use('/api/panning',  panningRoutes);
 app.use('/api/eq-match', eqMatchRoutes);
+app.use('/api/progress', progressRoutes);
+app.use('/api/stereo', stereoRoutes);
+app.use('/api/transient', transientRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));

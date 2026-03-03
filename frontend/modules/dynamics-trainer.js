@@ -240,6 +240,7 @@ class DynamicsTrainer {
             </div>
             <div class="action-panel">
               <button class="btn-rack btn-rack--primary" id="dyn-btn-restart">NEU STARTEN</button>
+              <button class="btn-rack" id="dyn-btn-close">SCHLIESSEN</button>
             </div>
           </div>
         </div>
@@ -269,6 +270,10 @@ class DynamicsTrainer {
     $('#dyn-btn-skip').addEventListener('click', () => this.skipRound());
     $('#dyn-btn-next').addEventListener('click', () => this.nextRound());
     $('#dyn-btn-restart').addEventListener('click', () => this.restart());
+    $('#dyn-btn-close').addEventListener('click', () => {
+      this.container.querySelector('#dyn-gameover').style.display = 'none';
+      this.restart(); this.phase = 'idle';
+    });
 
     this.container.querySelectorAll('.dyn-effect-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -674,12 +679,14 @@ class DynamicsTrainer {
   }
 
   async showGameOver() {
+    if (this._scoreSubmitted) return;
+    this._scoreSubmitted = true;
     this.stopAudio();
     this.stopTimer();
     this.phase = 'gameover';
 
     try {
-      await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak });
+      await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'dynamics' });
     } catch {}
 
     const overlay = this.container.querySelector('#dyn-gameover');
@@ -691,6 +698,7 @@ class DynamicsTrainer {
   }
 
   restart() {
+    this._scoreSubmitted = false;
     this._destroyed = false;
     const overlay = this.container.querySelector('#dyn-gameover');
     if (overlay) overlay.style.display = 'none';

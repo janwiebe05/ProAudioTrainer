@@ -30,4 +30,26 @@ router.post('/verify', (req, res, next) => {
   }
 });
 
+// POST /api/auth/change-password
+router.post('/change-password', async (req, res, next) => {
+  try {
+    const header = req.headers['authorization'];
+    if (!header || !header.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Nicht authentifiziert' });
+    }
+    const tokenResult = authService.verifyToken(header.slice(7));
+    if (!tokenResult.valid) return res.status(401).json({ error: 'Token ungültig' });
+
+    const { currentPassword, newPassword } = req.body;
+    // Get user id from token payload
+    const jwt = require('jsonwebtoken');
+    const JWT_SECRET = process.env.JWT_SECRET || 'proaudio-secret-change-in-prod';
+    const payload = jwt.verify(header.slice(7), JWT_SECRET);
+    const result = await authService.changePassword(payload.id, currentPassword, newPassword);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
