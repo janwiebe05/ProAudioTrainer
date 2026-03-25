@@ -152,6 +152,13 @@ class App {
     }, 800);
   }
 
+  closeMobileMenu() {
+    const mobileSidebar = document.querySelector('.app-sidebar');
+    const mobileBackdrop = document.getElementById('mobile-sidebar-backdrop');
+    if (mobileSidebar) mobileSidebar.classList.remove('mobile-open');
+    if (mobileBackdrop) mobileBackdrop.classList.remove('visible');
+  }
+
   loadModule(moduleId) {
     if (this.currentModule && typeof this.currentModule.destroy === 'function') {
       this.currentModule.destroy();
@@ -296,8 +303,30 @@ class App {
       btn.addEventListener('click', () => {
         if (btn.classList.contains('disabled')) return;
         this.loadModule(btn.dataset.module);
+        this.closeMobileMenu();
       });
     });
+
+    // Mobile hamburger menu
+    const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+    const mobileSidebar = document.querySelector('.app-sidebar');
+    const mobileBackdrop = document.getElementById('mobile-sidebar-backdrop');
+
+    if (mobileMenuBtn) {
+      mobileMenuBtn.addEventListener('click', () => {
+        const isOpen = mobileSidebar.classList.contains('mobile-open');
+        if (isOpen) {
+          this.closeMobileMenu();
+        } else {
+          mobileSidebar.classList.add('mobile-open');
+          mobileBackdrop.classList.add('visible');
+        }
+      });
+    }
+
+    if (mobileBackdrop) {
+      mobileBackdrop.addEventListener('click', () => this.closeMobileMenu());
+    }
 
     // Level buttons
     document.querySelectorAll('.level-item').forEach(btn => {

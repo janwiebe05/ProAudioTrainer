@@ -1579,3 +1579,146 @@
   width: 100%;
   height: 160px;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   GLOBAL MODULE RESPONSIVE — MOBILE
+   ═══════════════════════════════════════════════════════════════ */
+
+@media (max-width: 600px) {
+  /* Game header: 5-column grid → flex-wrap */
+  .game-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    padding: 10px 12px;
+  }
+
+  .level-display,
+  .score-display,
+  .streak-display {
+    flex: 1 1 60px;
+    min-width: 56px;
+  }
+
+  .timer-display {
+    flex: 1 1 80px;
+  }
+
+  .lives-display {
+    flex: 0 0 auto;
+    align-self: center;
+  }
+
+  /* Score values slightly smaller */
+  .level-display .value,
+  .score-display .value,
+  .streak-display .value {
+    font-size: 1.4rem;
+  }
+
+  /* A/B buttons: stack vertically on very small screens */
+  .ab-controls {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .btn-rack--ab {
+    flex: unset;
+    width: 100%;
+  }
+
+  /* Result details: 1-column on mobile */
+  .result-details {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  /* Gameover card */
+  .gameover-card {
+    padding: 24px 16px;
+    max-width: 90vw;
+  }
+
+  .gameover-final-score {
+    font-size: 2.5rem;
+  }
+
+  .gameover-stats {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  /* Sound library file items: wrap meta */
+  .lib-file-item {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .file-meta {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* Admin user rows: stack on mobile */
+  .admin-user-row {
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto auto;
+    gap: 6px 8px;
+  }
+
+  .admin-user-row--header {
+    display: none;
+  }
+
+  .admin-user-actions {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    align-self: center;
+  }
+
+  .admin-user-date {
+    grid-column: 1;
+    grid-row: 2;
+    font-size: 0.65rem;
+  }
+
+  /* Dynamics param rows: tighter on mobile */
+  .dyn-param-row {
+    grid-template-columns: 90px 1fr 60px;
+    gap: 8px;
+  }
+
+  .dyn-param-label {
+    font-size: 0.6rem;
+  }
+
+  .dyn-param-value {
+    font-size: 0.72rem;
+    min-width: 50px;
+  }
+
+  /* EQ Match knobs: slightly smaller */
+  .knob-body {
+    width: 40px;
+    height: 40px;
+  }
+
+  .eqm-header {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+
+  .eqm-footer {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  /* Module containers: full width */
+  .eq-trainer,
+  .dynamics-trainer,
+  .sound-library,
+  .admin-panel {
+    max-width: 100%;
+  }
+}

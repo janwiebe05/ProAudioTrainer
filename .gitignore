@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+.npm
+
+# Runtime data (persisted via Docker volume — never commit live data)
+backend/src/data/users.json
+backend/src/data/scores.json
+backend/src/data/library.json
+
+# Uploads
+backend/uploads/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db

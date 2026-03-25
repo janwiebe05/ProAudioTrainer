@@ -883,6 +883,49 @@ kbd {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   MOBILE MENU BUTTON (always hidden on desktop)
+   ═══════════════════════════════════════════════════════════════ */
+
+.mobile-menu-btn {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+  width: 36px;
+  height: 36px;
+  padding: 6px;
+  background: linear-gradient(180deg, #3a3a3a 0%, #2a2a2a 100%);
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-button);
+}
+
+.mobile-menu-btn span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--gold-warm);
+  border-radius: 1px;
+  transition: all 0.2s;
+}
+
+/* Mobile sidebar backdrop */
+.mobile-sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 150;
+}
+
+.mobile-sidebar-backdrop.visible {
+  display: block;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    RESPONSIVE
    ═══════════════════════════════════════════════════════════════ */
 
@@ -902,34 +945,124 @@ kbd {
 }
 
 @media (max-width: 768px) {
+  /* Allow scrolling on mobile */
+  body {
+    overflow: auto;
+    height: auto;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100svh;
+    min-height: 100vh;
+  }
+
+  .app-main {
+    overflow: visible;
+    flex-direction: column;
+  }
+
+  .app-content {
+    overflow: visible;
+    padding: 10px;
+  }
+
+  /* Sidebar becomes slide-in drawer on mobile */
   .app-sidebar {
+    display: flex !important;
+    position: fixed;
+    top: 0;
+    left: -260px;
+    width: 240px;
+    height: 100%;
+    z-index: 200;
+    transition: left 0.25s ease;
+    overflow-y: auto;
+    padding-top: 56px;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.8);
+  }
+
+  .app-sidebar.mobile-open {
+    left: 0;
+  }
+
+  /* Show hamburger button */
+  .mobile-menu-btn {
+    display: flex;
+  }
+
+  /* Header adjustments */
+  .header-rack-ears {
     display: none;
   }
 
+  .app-header {
+    gap: 8px;
+    padding: 0 10px;
+  }
+
   .header-center {
-    gap: 12px;
-  }
-
-  .app-nav {
-    gap: 4px;
-  }
-
-  .nav-btn {
-    padding: 6px 10px;
-    font-size: 0.7rem;
+    gap: 8px;
   }
 
   .header-logo {
-    min-width: 120px;
+    min-width: auto;
     border-right: none;
-    padding-right: 8px;
+    padding-right: 0;
+  }
+
+  .logo-model {
+    display: none;
+  }
+
+  .logo-brand {
+    font-size: 0.8rem;
+    letter-spacing: 1px;
+  }
+
+  .app-nav {
+    display: none;
+  }
+
+  .vu-meter-compact {
+    display: none;
+  }
+
+  .header-username {
+    display: none;
+  }
+
+  .header-user {
+    border-left: none;
+    padding-left: 0;
+    gap: 6px;
+  }
+
+  /* Footer adjustments */
+  .app-footer {
+    height: auto;
+    min-height: var(--footer-h);
+    padding: 6px 10px;
+  }
+
+  .footer-rack-ears {
+    display: none;
   }
 
   .shortcuts {
     display: none;
   }
 
-  .app-content {
-    padding: 12px;
+  .footer-right {
+    display: none;
+  }
+
+  .footer-center {
+    justify-content: center;
+  }
+
+  /* Login chassis full-width */
+  .login-chassis {
+    padding: 20px 24px;
   }
 }

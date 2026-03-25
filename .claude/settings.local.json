@@ -31,7 +31,9 @@
       "Bash(docker exec proaudio-frontend wget -qO- http://127.0.0.1:80/api/health)",
       "Bash(docker exec proaudio-frontend cat /etc/nginx/conf.d/default.conf)",
       "Bash(docker restart proaudio-frontend)",
-      "Bash(docker compose up -d --build backend)"
+      "Bash(docker compose up -d --build backend)",
+      "Bash(git rm:*)",
+      "Bash(grep -n \"readFileSync\\\\|writeFileSync\\\\|existsSync\\\\|require.*data/\" /root/.openclaw/workspace/coder/pro-audio-trainer-v2/backend/src/data/../repositories/*.js)"
     ]
   }
 }
