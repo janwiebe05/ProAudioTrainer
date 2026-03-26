@@ -21,6 +21,9 @@ jobs:
       - name: Copy env file
         run: cp .env.example .env
 
+      - name: Create external network (required by docker-compose)
+        run: docker network create nginx-proxy-manager_default
+
       - name: Build Docker images
         run: docker compose build
 
