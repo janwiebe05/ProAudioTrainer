@@ -61,6 +61,7 @@ pub fn render(dry: &AudioBuffer, exercise: &EqExercise) -> AudioBuffer {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EqResult {
     pub hit: bool,
     pub correct_freq: f32,

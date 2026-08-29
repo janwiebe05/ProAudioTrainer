@@ -92,6 +92,13 @@ pub fn probe_duration_secs(path: &Path) -> Result<f64> {
     Ok(last_ts as f64 / sample_rate as f64)
 }
 
+/// Decode an entire file (used for short assets like impulse responses,
+/// where windowing isn''t needed).
+pub fn decode_full(path: &Path) -> Result<AudioBuffer> {
+    let duration = probe_duration_secs(path)?;
+    decode_clip(path, 0.0, duration + 1.0) // +1s slack in case duration estimate is short
+}
+
 /// Decode a time-windowed clip `[start_secs, start_secs + duration_secs)` from
 /// `path` into a planar AudioBuffer. If the file is shorter than requested,
 /// the returned buffer is simply shorter (never panics/errors on that).

@@ -11,9 +11,8 @@ class TransientTrainer {
     this.lives = 3;
     this.phase = 'idle';
     this.exercise = null;
-    this.audioBuffer = null;
     this.audioCtx = null;
-    this.source = null;
+    this.player = null;
     this.isPlaying = false;
     this.abMode = 'processed';
     this.roundStartTime = null;
@@ -161,18 +160,15 @@ class TransientTrainer {
     this.container.querySelector('#tr-ab-btn').disabled = true;
 
     try {
-      const res = await fetch(`/api/transient/random?level=${this.level}`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-      });
-      if (!res.ok) throw new Error(await res.text());
-      this.exercise = await res.json();
+      // Rust core picks a random library track and renders the transient
+      // exercise via paw-core::dsp::dynamics (compressor with the preset's
+      // attack time — see paw_core::exercise::transient).
+      this.exercise = await invokeTauri('transient_random', { level: this.level });
 
-      const audioRes = await fetch(this.exercise.audioUrl, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-      });
-      const arrayBuffer = await audioRes.arrayBuffer();
       if (!this.audioCtx) this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      this.audioBuffer = await this.audioCtx.decodeAudioData(arrayBuffer);
+      if (!this.player) this.player = new DryWetPlayer(this.audioCtx);
+      else this.player.stop();
+      await this.player.loadDryWet(tauriFileUrl(this.exercise.dryPath), tauriFileUrl(this.exercise.processedPath));
 
       this.phase = 'playing';
       this.abMode = 'processed';
@@ -210,12 +206,9 @@ class TransientTrainer {
     const secondsTaken = Math.round((Date.now() - this.roundStartTime) / 1000);
 
     try {
-      const res = await fetch('/api/transient/evaluate', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ exerciseId: this.exercise.exerciseId, answer, secondsTaken }),
+      const data = await invokeTauri('transient_evaluate', {
+        exerciseId: this.exercise.exerciseId, answer, secondsTaken,
       });
-      const data = await res.json();
 
       this.score += data.points || 0;
       this.round += 1;
@@ -260,10 +253,12 @@ class TransientTrainer {
     correctEl.textContent = data.correct ? '✓ RICHTIG!' : `✗ FALSCH — Richtig: ${data.correctAnswer.toUpperCase()}`;
     correctEl.style.color = data.correct ? '#4caf50' : '#ff5252';
 
-    const p = data.preset || {};
+    // preset values come from the exercise itself (transient_random already
+    // reveals them, same as the legacy JS route did), not from the eval result.
+    const ex = this.exercise || {};
     detailEl.innerHTML = `
       ${data.explanation || ''}<br>
-      <span style="color:#a0c4ff">Attack: ${p.attack}ms · Ratio: ${p.ratio}:1 · Threshold: ${p.threshold}dB</span>
+      <span style="color:#a0c4ff">Attack: ${ex.attackMs}ms · Ratio: ${ex.ratio}:1 · Threshold: ${ex.thresholdDb}dB</span>
     `;
     scoreEl.textContent = data.points > 0 ? `+${data.points} Punkte` : '0 Punkte';
     panel.style.display = 'block';
@@ -287,47 +282,18 @@ class TransientTrainer {
     this.updateHUD();
   }
 
-  // ─── Audio ──────────────────────────────────────────────────────────────────
-
-  createCompressorNode(ctx, preset) {
-    const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = preset.threshold;
-    comp.ratio.value = preset.ratio;
-    comp.attack.value = preset.attack / 1000; // ms -> seconds
-    comp.release.value = 0.25;
-    comp.knee.value = 6;
-    return comp;
-  }
+  // ─── Audio (DryWetPlayer — see frontend/shared/dry-wet-player.js) ───────────
 
   playAudio() {
-    if (!this.audioBuffer || !this.audioCtx) return;
-    this.stopAudio();
-    if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
-
-    const source = this.audioCtx.createBufferSource();
-    source.buffer = this.audioBuffer;
-    source.loop = true;
-
-    if (this.abMode === 'original') {
-      source.connect(this.audioCtx.destination);
-    } else {
-      const preset = this.exercise ? this.exercise.preset : { attack: 50, ratio: 2, threshold: -20 };
-      const comp = this.createCompressorNode(this.audioCtx, preset);
-      source.connect(comp);
-      comp.connect(this.audioCtx.destination);
-    }
-
-    source.start();
-    this.source = source;
+    if (!this.player) return;
+    this.player.play();
+    this.player.setWetMode(this.abMode === 'processed');
     this.isPlaying = true;
     this.container.querySelector('#tr-play-btn').textContent = '■ STOP';
   }
 
   stopAudio() {
-    if (this.source) {
-      try { this.source.stop(); } catch (e) {}
-      this.source = null;
-    }
+    if (this.player) this.player.stop();
     this.isPlaying = false;
     const btn = this.container.querySelector('#tr-play-btn');
     if (btn) btn.textContent = '▶ PLAY';
@@ -342,7 +308,7 @@ class TransientTrainer {
     this.abMode = this.abMode === 'processed' ? 'original' : 'processed';
     const btn = this.container.querySelector('#tr-ab-btn');
     if (btn) btn.textContent = `A/B: ${this.abMode === 'processed' ? 'KOMPRIMIERT' : 'ORIGINAL'}`;
-    if (this.isPlaying) { this.stopAudio(); this.playAudio(); }
+    if (this.player) this.player.setWetMode(this.abMode === 'processed');
   }
 
   // ─── Timer ──────────────────────────────────────────────────────────────────

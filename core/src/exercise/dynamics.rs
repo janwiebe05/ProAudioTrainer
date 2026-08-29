@@ -84,7 +84,8 @@ fn rand_range(r: (f32, f32), rng: &mut impl Rng) -> f32 {
     rng.gen_range(r.0..=r.1)
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum GuessMode {
     TypeOnly,
     TypeAmount,
@@ -155,6 +156,7 @@ pub fn render(dry: &AudioBuffer, exercise: &DynamicsExercise) -> AudioBuffer {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DynamicsResult {
     pub score: u32,
     pub type_correct: bool,

@@ -11,16 +11,12 @@ class PanningTrainer {
     this.lives     = 3;
     this.phase     = 'idle';
     this.exercise  = null;
-    this.audioBuffer = null;
-    this.source    = null;
-    this.bypassGain    = null;
-    this.processedGain = null;
+    this.player    = null;
     this.isPlaying = false;
     this.abMode    = 'processed';
     this.elapsedSeconds = 0;
     this.timerInterval  = null;
     this.maxTime   = 45;
-    this._msWorkletLoaded = false;
     this._destroyed = false;
   }
 
@@ -168,20 +164,23 @@ class PanningTrainer {
     this.setStatus('Lade Übung…', true);
 
     try {
-      const exercise = await apiCall('GET', `/panning/random?level=${this.level}`);
+      // Rust core picks a random library track and renders pan/width via
+      // paw-core::dsp::pan (real Web-Audio-spec equal-power panning) or
+      // paw-core::dsp::stereo_width — no more live StereoPannerNode/worklet.
+      const exercise = await invokeTauri('panning_random', { level: this.level });
       this.exercise = exercise;
 
       this.setStatus('Lade Audio…', true);
-      const token = localStorage.getItem('token');
-      const audioRes = await fetch(exercise.audioUrl, { headers: { Authorization: `Bearer ${token}` } });
-      if (!audioRes.ok) throw new Error('Audio nicht ladbar');
-
-      const ctx = this.app.getAudioContext();
-      this.audioBuffer = await ctx.decodeAudioData(await audioRes.arrayBuffer());
+      if (!this.player) this.player = new DryWetPlayer(this.app.getAudioContext());
+      else this.player.stop();
+      await this.player.loadDryWet(tauriFileUrl(exercise.dryPath), tauriFileUrl(exercise.processedPath));
       if (this._destroyed) return;
 
-      await this.buildAudioGraph();
-      this.startPlayback();
+      this.player.play();
+      this.setABMode(this.abMode);
+      this.isPlaying = true;
+      this.updatePlayButton();
+
       this.startTimer();
       this.applyGuessMode(exercise.guessMode, exercise);
       this.setControlsEnabled(true);
@@ -193,73 +192,19 @@ class PanningTrainer {
     }
   }
 
-  // ─── Audio graph ──────────────────────────────────────────────────────────────
-  // A (bypass): source → bypassGain → destination  (original, unprocessed)
-  // B (processed):
-  //   Level I+II: source → StereoPannerNode → processedGain → destination
-  //   Level III:  source → AudioWorklet(ms-width) → processedGain → destination
+  // ─── Audio playback (DryWetPlayer — see frontend/shared/dry-wet-player.js) ──
 
-  async buildAudioGraph() {
-    const ctx = this.app.getAudioContext();
-    const p   = this.exercise.params;
-    const mode = this.exercise.guessMode;
-
-    this.bypassGain = ctx.createGain();
-    this.bypassGain.gain.value = this.abMode === 'bypass' ? 1 : 0;
-    this.bypassGain.connect(ctx.destination);
-
-    this.processedGain = ctx.createGain();
-    this.processedGain.gain.value = this.abMode === 'processed' ? 1 : 0;
-    this.processedGain.connect(ctx.destination);
-
-    if (mode === 'zone' || mode === 'value') {
-      // StereoPannerNode: equal-power pan law, ITU-R BS.775 compliant
-      this._pannerNode = ctx.createStereoPanner();
-      this._pannerNode.pan.value = p.panValue / 100; // -1..+1
-      this._pannerNode.connect(this.processedGain);
-      this._effectInput = this._pannerNode;
-    } else {
-      // M/S Width via AudioWorklet
-      if (!this._msWorkletLoaded) {
-        await ctx.audioWorklet.addModule('/worklets/ms-width-processor.js');
-        this._msWorkletLoaded = true;
-      }
-      this._workletNode = new AudioWorkletNode(ctx, 'ms-width-processor', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
-      this._workletNode.parameters.get('width').value = p.width;
-      this._workletNode.connect(this.processedGain);
-      this._effectInput = this._workletNode;
-    }
-  }
-
-  startPlayback() {
-    const ctx = this.app.getAudioContext();
-    if (ctx.state === 'suspended') ctx.resume();
-    this.source = ctx.createBufferSource();
-    this.source.buffer = this.audioBuffer;
-    this.source.loop   = true;
-    this.source.connect(this.bypassGain);
-    this.source.connect(this._effectInput);
-    this.source.start();
-    this.isPlaying = true;
+  togglePlay() {
+    if (!this.player) return;
+    this.player.togglePlayback();
+    this.isPlaying = this.player.isPlaying;
     this.updatePlayButton();
   }
 
   stopAudio() {
-    if (this.source) { try { this.source.stop(); } catch {} this.source = null; }
-    [this.bypassGain, this.processedGain].forEach(n => { if (n) { try { n.disconnect(); } catch {} } });
-    if (this._pannerNode)  { try { this._pannerNode.disconnect();  } catch {} this._pannerNode  = null; }
-    if (this._workletNode) { try { this._workletNode.disconnect(); } catch {} this._workletNode = null; }
-    this.bypassGain = this.processedGain = this._effectInput = null;
+    if (this.player) this.player.stop();
     this.isPlaying = false;
     this.updatePlayButton();
-  }
-
-  togglePlay() {
-    if (this.isPlaying) {
-      this.stopAudio();
-    } else if (this.audioBuffer && this.exercise) {
-      this.buildAudioGraph().then(() => this.startPlayback());
-    }
   }
 
   updatePlayButton() {
@@ -271,8 +216,7 @@ class PanningTrainer {
 
   setABMode(mode) {
     this.abMode = mode;
-    if (this.bypassGain)    this.bypassGain.gain.value    = mode === 'bypass'    ? 1 : 0;
-    if (this.processedGain) this.processedGain.gain.value = mode === 'processed' ? 1 : 0;
+    if (this.player) this.player.setWetMode(mode === 'processed');
     const btn = this.container.querySelector('#pan-btn-ab');
     if (btn) {
       btn.textContent = mode === 'bypass' ? 'A · ORIGINAL' : 'B · PROCESSED';
@@ -344,6 +288,30 @@ class PanningTrainer {
 
   // ─── Answer ───────────────────────────────────────────────────────────────────
 
+  // Feedback text is built client-side: panning_random already reveals the
+  // correct answer up front (same as the legacy JS route did), so there is
+  // no need for panning_evaluate to also return formatted strings.
+  buildFeedback(mode, guesses, correct) {
+    const ex = this.exercise;
+    if (mode === 'zone') {
+      const correctZone = ex.panZones.find(z => z.id === ex.zoneId);
+      const correctIdx = ex.panZones.findIndex(z => z.id === ex.zoneId);
+      const guessIdx   = ex.panZones.findIndex(z => z.id === guesses.guessZone);
+      const partial = Math.abs(correctIdx - guessIdx) === 1;
+      return correct ? `Richtig: ${correctZone.label}` : `Falsch. Richtig: ${correctZone.label}${partial ? ' (Nachbarzone)' : ''}`;
+    }
+    if (mode === 'value') {
+      const cv = ex.panValue, gv = guesses.guessPan ?? 0;
+      const side = v => v > 0 ? 'R' : v < 0 ? 'L' : 'C';
+      return `Richtig: ${side(cv)} ${Math.abs(cv)} | Dein Wert: ${side(gv)} ${Math.abs(gv)}`;
+    }
+    const correctStep = ex.widthSteps.find(s => s.id === ex.widthId);
+    const correctIdx  = ex.widthSteps.findIndex(s => s.id === ex.widthId);
+    const guessIdx    = ex.widthSteps.findIndex(s => s.id === guesses.guessWidth);
+    const partial = Math.abs(correctIdx - guessIdx) === 1;
+    return correct ? `Richtig: ${correctStep.label}` : `Falsch. Richtig: ${correctStep.label}${partial ? ' (Nachbarstufe)' : ''}`;
+  }
+
   async submitAnswer() {
     if (this.phase !== 'playing' || !this.exercise) return;
     this.phase = 'result';
@@ -351,14 +319,18 @@ class PanningTrainer {
     this.setControlsEnabled(false);
 
     const mode = this.exercise.guessMode;
-    const body = { exerciseId: this.exercise.exerciseId, secondsTaken: this.elapsedSeconds };
-    if (mode === 'zone')  body.guessZone  = this.container.querySelector('.dyn-effect-btn.active[data-zone]')?.dataset.zone;
-    if (mode === 'value') body.guessPan   = parseInt(this.container.querySelector('#pan-slider').value);
-    if (mode === 'width') body.guessWidth = this.container.querySelector('.dyn-effect-btn.active[data-width]')?.dataset.width;
+    const guesses = { exerciseId: this.exercise.exerciseId, secondsTaken: this.elapsedSeconds };
+    if (mode === 'zone')  guesses.guessZone  = this.container.querySelector('.dyn-effect-btn.active[data-zone]')?.dataset.zone;
+    if (mode === 'value') guesses.guessPan   = parseInt(this.container.querySelector('#pan-slider').value);
+    if (mode === 'width') guesses.guessWidth = this.container.querySelector('.dyn-effect-btn.active[data-width]')?.dataset.width;
 
     try {
-      const result = await apiCall('POST', '/panning/evaluate', body);
-      this.applyResult(result);
+      const evalResult = await invokeTauri('panning_evaluate', guesses);
+      this.applyResult({
+        score: evalResult.score,
+        correct: evalResult.correct,
+        feedback: this.buildFeedback(mode, guesses, evalResult.correct),
+      });
     } catch (err) {
       this.setStatus(`Fehler: ${err.message}`);
       this.phase = 'playing';

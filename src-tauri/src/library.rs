@@ -42,3 +42,25 @@ pub fn pick_random_track(dir: &Path, rng: &mut impl Rng) -> Option<PathBuf> {
     }
     Some(tracks[rng.gen_range(0..tracks.len())].clone())
 }
+
+// ─── Tauri commands ─────────────────────────────────────────────────────────
+use crate::state::AppState;
+
+#[tauri::command]
+pub fn library_count(state: tauri::State<AppState>) -> u32 {
+    scan_tracks(&state.library_dir).len() as u32
+}
+
+#[tauri::command]
+pub fn library_import(paths: Vec<String>, state: tauri::State<AppState>) -> Result<u32, String> {
+    fs::create_dir_all(&state.library_dir).map_err(|e| e.to_string())?;
+    let mut imported = 0u32;
+    for p in paths {
+        let src = PathBuf::from(&p);
+        let Some(name) = src.file_name() else { continue };
+        let dest = state.library_dir.join(name);
+        fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+        imported += 1;
+    }
+    Ok(imported)
+}

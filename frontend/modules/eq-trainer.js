@@ -24,7 +24,7 @@ class GameState {
   }
 
   // Target-frequency generation and guess scoring both moved server-side to
-  // paw-core::exercise::eq (Rust) — see AudioEngine/startNewRound/submitGuess
+  // paw-core::exercise::eq (Rust) — see DryWetPlayer/startNewRound/submitGuess
   // below — so the target frequency is never known client-side until the
   // eq_evaluate response reveals it.
 
@@ -151,131 +151,8 @@ class FrequencyScale {
   }
 }
 
-// ─── Tauri bridge helpers ──────────────────────────────────────────────────────
-// The exercise clips are now rendered server-side by the Rust core (paw-core)
-// instead of live client-side BiquadFilter DSP — see /root/.claude/plans
-// (or docs/) for why: consistent, portable DSP across desktop platforms.
-async function invokeTauri(cmd, args) {
-  if (!window.__TAURI__) throw new Error('Nicht in der Desktop-App — Tauri-Bridge fehlt.');
-  return window.__TAURI__.core.invoke(cmd, args);
-}
-
-function tauriFileUrl(path) {
-  return window.__TAURI__.core.convertFileSrc(path);
-}
-
-async function fetchAndDecode(ctx, url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('Audio-Download fehlgeschlagen');
-  const arrayBuffer = await res.arrayBuffer();
-  return new Promise((resolve, reject) => ctx.decodeAudioData(arrayBuffer, resolve, reject));
-}
-
-// ─── Audio Engine ─────────────────────────────────────────────────────────────
-// Dry and processed clips arrive as two pre-rendered WAV files (rendered by
-// paw-core::exercise::eq — real RBJ peaking EQ, not a live BiquadFilterNode).
-// Both loop in perfect sync; A/B toggling is just muting/unmuting one path,
-// same instant-switch feel as the old live-filter version.
-class AudioEngine {
-  constructor(audioContext) {
-    this.ctx = audioContext;
-    this.drySource = null;
-    this.wetSource = null;
-    this.dryGain = this.ctx.createGain();
-    this.wetGain = this.ctx.createGain();
-    this.masterGain = this.ctx.createGain();
-    this.analyser = this.ctx.createAnalyser();
-
-    this.dryGain.gain.value = 1.0;
-    this.wetGain.gain.value = 0.0;
-    this.masterGain.gain.value = 0.85;
-    this.analyser.fftSize = 2048;
-    this.analyser.smoothingTimeConstant = 0.8;
-
-    // Main audio graph: dry + wet paths → masterGain → analyser → destination
-    this.dryGain.connect(this.masterGain);
-    this.wetGain.connect(this.masterGain);
-    this.masterGain.connect(this.analyser);
-    this.analyser.connect(this.ctx.destination);
-
-    this.isPlaying = false;
-    this.eqEnabled = false;
-    this.dryBuffer = null;
-    this.wetBuffer = null;
-  }
-
-  async loadDryWet(dryUrl, wetUrl) {
-    const [dryBuf, wetBuf] = await Promise.all([
-      fetchAndDecode(this.ctx, dryUrl),
-      fetchAndDecode(this.ctx, wetUrl),
-    ]);
-    this.dryBuffer = dryBuf;
-    this.wetBuffer = wetBuf;
-  }
-
-  play() {
-    if (!this.dryBuffer || !this.wetBuffer) return;
-    if (this.isPlaying) this.stop();
-    this.drySource = this.ctx.createBufferSource();
-    this.drySource.buffer = this.dryBuffer;
-    this.drySource.loop = true;
-    this.drySource.connect(this.dryGain);
-
-    this.wetSource = this.ctx.createBufferSource();
-    this.wetSource.buffer = this.wetBuffer;
-    this.wetSource.loop = true;
-    this.wetSource.connect(this.wetGain);
-
-    // Start both together, slightly in the future, so they stay sample-locked.
-    const startAt = this.ctx.currentTime + 0.05;
-    this.drySource.start(startAt);
-    this.wetSource.start(startAt);
-    this.isPlaying = true;
-  }
-
-  stop() {
-    if (this.drySource) {
-      this.drySource.stop();
-      this.drySource.disconnect();
-      this.drySource = null;
-    }
-    if (this.wetSource) {
-      this.wetSource.stop();
-      this.wetSource.disconnect();
-      this.wetSource = null;
-    }
-    this.isPlaying = false;
-  }
-
-  togglePlayback() {
-    if (this.isPlaying) { this.stop(); } else { this.play(); }
-  }
-
-  setEQMode(enabled) {
-    const now = this.ctx.currentTime;
-    const fade = 0.020;
-    this.dryGain.gain.cancelScheduledValues(now);
-    this.wetGain.gain.cancelScheduledValues(now);
-    this.dryGain.gain.setValueAtTime(this.dryGain.gain.value, now);
-    this.wetGain.gain.setValueAtTime(this.wetGain.gain.value, now);
-    if (enabled) {
-      this.dryGain.gain.linearRampToValueAtTime(0, now + fade);
-      this.wetGain.gain.linearRampToValueAtTime(1, now + fade);
-    } else {
-      this.dryGain.gain.linearRampToValueAtTime(1, now + fade);
-      this.wetGain.gain.linearRampToValueAtTime(0, now + fade);
-    }
-    this.eqEnabled = enabled;
-  }
-
-  destroy() {
-    this.stop();
-    this.dryGain.disconnect();
-    this.wetGain.disconnect();
-    this.masterGain.disconnect();
-    this.analyser.disconnect();
-  }
-}
+// Audio engine: see frontend/shared/dry-wet-player.js (DryWetPlayer,
+// invokeTauri, tauriFileUrl) — loaded before this file in index.html.
 
 // ─── EQ Trainer Module ────────────────────────────────────────────────────────
 class EQTrainerModule {
@@ -512,7 +389,7 @@ class EQTrainerModule {
       if (statusEl) statusEl.textContent = 'Lade Audio…';
 
       if (!this.audioEngine) {
-        this.audioEngine = new AudioEngine(this.app.getAudioContext());
+        this.audioEngine = new DryWetPlayer(this.app.getAudioContext());
       } else {
         this.audioEngine.stop();
       }
@@ -703,21 +580,21 @@ class EQTrainerModule {
 
   selectBypass() {
     if (!this.audioEngine) return;
-    this.audioEngine.setEQMode(false);
+    this.audioEngine.setWetMode(false);
     const btn = this.container.querySelector('#btn-ab-toggle');
     if (btn) { btn.textContent = 'A / BYPASS'; btn.classList.remove('active-eq'); }
   }
 
   selectEQ() {
     if (!this.audioEngine) return;
-    this.audioEngine.setEQMode(true);
+    this.audioEngine.setWetMode(true);
     const btn = this.container.querySelector('#btn-ab-toggle');
     if (btn) { btn.textContent = 'B / EQ ON'; btn.classList.add('active-eq'); }
   }
 
   toggleAB() {
     if (!this.audioEngine) return;
-    if (this.audioEngine.eqEnabled) { this.selectBypass(); } else { this.selectEQ(); }
+    if (this.audioEngine.wetEnabled) { this.selectBypass(); } else { this.selectEQ(); }
   }
 
   togglePlayback() {
