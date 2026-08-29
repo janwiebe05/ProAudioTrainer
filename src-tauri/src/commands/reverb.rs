@@ -1,7 +1,7 @@
 use crate::state::{load_random_clip, write_dry_wet, AppState};
 use paw_core::store::Store;
 use paw_core::decode;
-use paw_core::exercise::reverb::{self, category_label, ReverbExercise, CATEGORIES};
+use paw_core::exercise::reverb::{self, category_label, ReverbExercise};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -79,11 +79,7 @@ pub fn reverb_evaluate_impl(
     seconds_taken: f32,
     exercises: &Mutex<HashMap<String, ReverbExercise>>,
 ) -> Result<ReverbEvalResponse, String> {
-    let exercise = exercises
-        .lock()
-        .unwrap()
-        .remove(exercise_id)
-        .ok_or_else(|| "Übung nicht gefunden oder abgelaufen".to_string())?;
+    let exercise = crate::state::take_exercise(exercises, exercise_id)?;
     let result = reverb::evaluate(&exercise, guess_category, seconds_taken);
     Ok(ReverbEvalResponse {
         correct: result.correct,
@@ -93,10 +89,6 @@ pub fn reverb_evaluate_impl(
     })
 }
 
-#[allow(dead_code)]
-fn all_categories() -> &'static [&'static str] {
-    &CATEGORIES
-}
 
 #[tauri::command]
 pub fn reverb_random(level: u8, state: tauri::State<AppState>) -> Result<ReverbRandomResponse, String> {

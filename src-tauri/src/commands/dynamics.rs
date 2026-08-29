@@ -98,11 +98,7 @@ pub fn dynamics_evaluate_impl(
     seconds_taken: f32,
     exercises: &Mutex<HashMap<String, DynamicsExercise>>,
 ) -> Result<dynamics::DynamicsResult, String> {
-    let exercise = exercises
-        .lock()
-        .unwrap()
-        .remove(exercise_id)
-        .ok_or_else(|| "Übung nicht gefunden oder abgelaufen".to_string())?;
+    let exercise = crate::state::take_exercise(exercises, exercise_id)?;
 
     let guess = DynamicsGuess {
         effect: guess_effect.as_deref().and_then(parse_effect),

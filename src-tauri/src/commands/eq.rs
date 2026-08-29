@@ -58,11 +58,7 @@ pub fn eq_evaluate_impl(
     seconds_taken: f32,
     exercises: &Mutex<HashMap<String, EqExercise>>,
 ) -> Result<eq::EqResult, String> {
-    let exercise = exercises
-        .lock()
-        .unwrap()
-        .remove(exercise_id)
-        .ok_or_else(|| "Übung nicht gefunden oder abgelaufen".to_string())?;
+    let exercise = crate::state::take_exercise(exercises, exercise_id)?;
     Ok(eq::evaluate(&exercise, guess_freq, seconds_taken))
 }
 

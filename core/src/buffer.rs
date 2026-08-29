@@ -49,6 +49,9 @@ impl AudioBuffer {
     /// if it has fewer, or drop extras if it has more. Used so mono source
     /// material can go through effects that assume stereo (pan, width).
     pub fn to_channel_count(&self, n: usize) -> AudioBuffer {
+        if self.num_channels() == n {
+            return self.clone();
+        }
         let mut out = AudioBuffer::new(self.sample_rate, n, self.num_frames());
         for (i, ch) in out.channels.iter_mut().enumerate() {
             let src_idx = i.min(self.num_channels().saturating_sub(1));

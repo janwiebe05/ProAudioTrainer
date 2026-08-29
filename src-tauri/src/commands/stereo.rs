@@ -60,11 +60,7 @@ pub fn stereo_evaluate_impl(
     seconds_taken: f32,
     exercises: &Mutex<HashMap<String, StereoExercise>>,
 ) -> Result<StereoEvalResponse, String> {
-    let exercise = exercises
-        .lock()
-        .unwrap()
-        .remove(exercise_id)
-        .ok_or_else(|| "Übung nicht gefunden oder abgelaufen".to_string())?;
+    let exercise = crate::state::take_exercise(exercises, exercise_id)?;
     let result = stereo::evaluate(&exercise, answer, seconds_taken);
     Ok(StereoEvalResponse {
         correct: result.correct,

@@ -15,7 +15,6 @@ class GameState {
     this.lastResult = null;
     this.sessionScore = 0;
     this.roundStartTime = null;
-    this.currentExerciseId = null; // set by startNewRound(), consumed by submitGuess()
   }
 
   getToleranceOctaves() {
@@ -170,6 +169,7 @@ class EQTrainerModule {
     this._keyHandler = null;
     this.freqRangeMin = parseInt(localStorage.getItem('freqRangeMin') || '100');
     this.freqRangeMax = parseInt(localStorage.getItem('freqRangeMax') || '8000');
+    this.currentExerciseId = null; // set by startNewRound(), consumed by submitGuess()
   }
 
   init() {

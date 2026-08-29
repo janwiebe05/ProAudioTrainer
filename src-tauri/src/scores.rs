@@ -2,14 +2,8 @@
 //! legacy web app's global highscores concept doesn't apply to a
 //! single-profile desktop install). See paw_core::store.
 
-use crate::state::AppState;
+use crate::state::{now_iso, AppState};
 use paw_core::store::{ModuleProgress, ProgressSummary, ScoreEntry};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn now_iso() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    format!("{secs}")
-}
 
 #[tauri::command]
 pub fn scores_submit(

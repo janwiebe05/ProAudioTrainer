@@ -67,11 +67,7 @@ pub fn transient_evaluate_impl(
     seconds_taken: f32,
     exercises: &Mutex<HashMap<String, TransientExercise>>,
 ) -> Result<TransientEvalResponse, String> {
-    let exercise = exercises
-        .lock()
-        .unwrap()
-        .remove(exercise_id)
-        .ok_or_else(|| "Übung nicht gefunden oder abgelaufen".to_string())?;
+    let exercise = crate::state::take_exercise(exercises, exercise_id)?;
     let result = transient::evaluate(&exercise, answer, seconds_taken);
     Ok(TransientEvalResponse {
         correct: result.correct,

@@ -73,11 +73,7 @@ pub fn panning_evaluate_impl(
     seconds_taken: f32,
     exercises: &Mutex<HashMap<String, PanningExercise>>,
 ) -> Result<panning::PanningResult, String> {
-    let exercise = exercises
-        .lock()
-        .unwrap()
-        .remove(exercise_id)
-        .ok_or_else(|| "Übung nicht gefunden oder abgelaufen".to_string())?;
+    let exercise = crate::state::take_exercise(exercises, exercise_id)?;
 
     match exercise {
         PanningExercise::Zone { zone_idx } => {

@@ -2,13 +2,7 @@
 //! single name per install, used only to tag which library tracks are
 //! "yours" vs. shared/school content (see paw_core::store).
 
-use crate::state::AppState;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn now_iso() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    format!("{secs}")
-}
+use crate::state::{now_iso, AppState};
 
 #[tauri::command]
 pub fn profile_get(state: tauri::State<AppState>) -> Result<Option<String>, String> {

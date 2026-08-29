@@ -28,6 +28,28 @@ pub struct AppState {
     pub reverb_exercises: Mutex<HashMap<String, reverb::ReverbExercise>>,
 }
 
+/// Lightweight seconds-since-epoch timestamp — good enough for display/
+/// ordering, avoids pulling in a chrono/time dependency. Shared by
+/// library.rs, profile.rs and scores.rs (was duplicated in each before).
+pub fn now_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("{secs}")
+}
+
+/// Remove and return the exercise for `id`, or the standard not-found
+/// error — the lock/remove/error-map sequence every *_evaluate_impl repeats.
+pub fn take_exercise<T>(
+    exercises: &Mutex<HashMap<String, T>>,
+    id: &str,
+) -> Result<T, String> {
+    exercises
+        .lock()
+        .unwrap()
+        .remove(id)
+        .ok_or_else(|| "Übung nicht gefunden oder abgelaufen".to_string())
+}
+
 pub fn pick_start_time(duration_secs: f64, rng: &mut impl Rng) -> f64 {
     let range = (duration_secs - CLIP_DURATION_SECS).max(0.0);
     rng.gen::<f64>() * range

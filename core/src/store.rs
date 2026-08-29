@@ -187,17 +187,24 @@ impl Store {
     }
 
     /// One random *active*, accessible-to-`owner` track — used by the
-    /// exercise engine instead of a filesystem scan.
+    /// exercise engine instead of a filesystem scan. Filters in SQL rather
+    /// than fetching every accessible track (incl. inactive ones) and
+    /// discarding most of them in Rust.
     pub fn pick_random_active_track(&self, owner: &str, rng: &mut impl Rng) -> Result<Option<Track>> {
-        let accessible: Vec<Track> = self
-            .list_accessible(owner)?
-            .into_iter()
-            .filter(|t| t.active)
-            .collect();
-        if accessible.is_empty() {
+        let active: Vec<Track> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {TRACK_COLUMNS} FROM tracks WHERE (owner IS NULL OR owner = ?1) AND active = 1"
+                ))
+                .map_err(map_err)?;
+            let rows = stmt.query_map(params![owner], row_to_track).map_err(map_err)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)?
+        };
+        if active.is_empty() {
             return Ok(None);
         }
-        Ok(Some(accessible[rng.gen_range(0..accessible.len())].clone()))
+        Ok(Some(active[rng.gen_range(0..active.len())].clone()))
     }
 
     // ─── Scores ──────────────────────────────────────────────────────────────
