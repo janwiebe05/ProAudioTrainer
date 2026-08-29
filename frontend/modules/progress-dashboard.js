@@ -23,14 +23,34 @@ class ProgressDashboard {
   async loadData() {
     if (this._loading) return;
     this._loading = true;
-    const token = localStorage.getItem('token');
-    if (!token) {
-      this.container.querySelector('#prog-status').textContent = 'Nicht eingeloggt.';
-      this._loading = false;
-      return;
-    }
-    const headers = { 'Authorization': `Bearer ${token}` };
+
     try {
+      if (window.__TAURI__) {
+        const [summary, sessions, overview] = await Promise.all([
+          invokeTauri('progress_summary'),
+          invokeTauri('scores_recent', { limit: 20 }),
+          invokeTauri('progress_overview'),
+        ]);
+        this.summary = summary;
+        this.sessions = sessions;
+        // Reuse the existing weakspots rendering (module/avgScore/sessionCount)
+        // fed from progress_overview's per-module totals instead of a
+        // dedicated backend endpoint.
+        this.weakspots = overview.map(m => ({
+          module: m.module,
+          avgScore: m.sessions > 0 ? Math.round(m.totalScore / m.sessions) : 0,
+          sessionCount: m.sessions,
+        }));
+        this.renderData();
+        return;
+      }
+
+      const token = localStorage.getItem('token');
+      if (!token) {
+        this.container.querySelector('#prog-status').textContent = 'Nicht eingeloggt.';
+        return;
+      }
+      const headers = { 'Authorization': `Bearer ${token}` };
       const [sumRes, sessRes, weakRes] = await Promise.all([
         fetch('/api/progress/summary', { headers }),
         fetch('/api/progress/sessions', { headers }),
@@ -43,7 +63,6 @@ class ProgressDashboard {
         } else {
           this.container.querySelector('#prog-status').textContent = `Fehler beim Laden (HTTP ${status}).`;
         }
-        this._loading = false;
         return;
       }
       this.summary   = await sumRes.json();
@@ -51,7 +70,7 @@ class ProgressDashboard {
       this.weakspots = await weakRes.json();
       this.renderData();
     } catch (err) {
-      this.container.querySelector('#prog-status').textContent = 'Netzwerkfehler beim Laden der Daten.';
+      this.container.querySelector('#prog-status').textContent = `Fehler beim Laden der Daten: ${err}`;
     } finally {
       this._loading = false;
     }
@@ -148,7 +167,7 @@ class ProgressDashboard {
     this.container.querySelector('#prog-total-points').textContent = (s.totalPoints || 0).toLocaleString('de-DE');
     this.container.querySelector('#prog-total-rounds').textContent = (s.totalRounds || 0).toLocaleString('de-DE');
     this.container.querySelector('#prog-avg-score').textContent = (s.avgScore || 0).toLocaleString('de-DE');
-    this.container.querySelector('#prog-best-streak').textContent = (s.currentStreak || 0) + 'x';
+    this.container.querySelector('#prog-best-streak').textContent = (s.bestStreak ?? s.currentStreak ?? 0) + 'x';
     this.container.querySelector('#prog-sessions').textContent = (s.sessionCount || 0);
     this.container.querySelector('#prog-stats').style.display = 'flex';
 

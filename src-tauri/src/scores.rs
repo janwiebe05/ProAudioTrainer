@@ -3,7 +3,7 @@
 //! single-profile desktop install). See paw_core::store.
 
 use crate::state::AppState;
-use paw_core::store::{ModuleProgress, ScoreEntry};
+use paw_core::store::{ModuleProgress, ProgressSummary, ScoreEntry};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_iso() -> String {
@@ -36,4 +36,14 @@ pub fn scores_top(module: String, limit: Option<i64>, state: tauri::State<AppSta
 #[tauri::command]
 pub fn progress_overview(state: tauri::State<AppState>) -> Result<Vec<ModuleProgress>, String> {
     state.db.progress_overview().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn progress_summary(state: tauri::State<AppState>) -> Result<ProgressSummary, String> {
+    state.db.summary().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn scores_recent(limit: Option<i64>, state: tauri::State<AppState>) -> Result<Vec<ScoreEntry>, String> {
+    state.db.recent_scores(limit.unwrap_or(20)).map_err(|e| e.to_string())
 }

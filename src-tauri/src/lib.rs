@@ -81,7 +81,9 @@ pub fn run() {
             profile::profile_set,
             scores::scores_submit,
             scores::scores_top,
+            scores::scores_recent,
             scores::progress_overview,
+            scores::progress_summary,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -84,6 +84,16 @@ pub struct ModuleProgress {
     pub total_score: i64,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressSummary {
+    pub total_points: i64,
+    pub total_rounds: i64,
+    pub avg_score: i64,
+    pub best_streak: i64,
+    pub session_count: i64,
+}
+
 fn map_err(e: rusqlite::Error) -> CoreError {
     CoreError::Decode(format!("sqlite: {e}"))
 }
@@ -236,6 +246,46 @@ impl Store {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     }
 
+    /// All-time aggregate across every module — feeds the dashboard's stat
+    /// cards (legacy /api/progress/summary).
+    pub fn summary(&self) -> Result<ProgressSummary> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COALESCE(SUM(score),0), COALESCE(SUM(rounds),0),
+                     COALESCE(CAST(AVG(score) AS INTEGER),0), COALESCE(MAX(streak),0), COUNT(*)
+              FROM scores",
+            [],
+            |row| {
+                Ok(ProgressSummary {
+                    total_points: row.get(0)?,
+                    total_rounds: row.get(1)?,
+                    avg_score: row.get(2)?,
+                    best_streak: row.get(3)?,
+                    session_count: row.get(4)?,
+                })
+            },
+        ).map_err(map_err)
+    }
+
+    /// Most recent scores across all modules, newest first — feeds the
+    /// dashboard's session-history table and learning-curve chart (legacy
+    /// /api/progress/sessions).
+    pub fn recent_scores(&self, limit: i64) -> Result<Vec<ScoreEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, module, score, rounds, level, streak, created_at FROM scores ORDER BY created_at DESC LIMIT ?1")
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(ScoreEntry {
+                    id: row.get(0)?, module: row.get(1)?, score: row.get(2)?,
+                    rounds: row.get(3)?, level: row.get(4)?, streak: row.get(5)?, created_at: row.get(6)?,
+                })
+            })
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
     // ─── Local profile ───────────────────────────────────────────────────────
 
     pub fn get_profile_username(&self) -> Result<Option<String>> {
@@ -362,6 +412,24 @@ mod tests {
         for key in ["module", "sessions", "bestScore", "totalScore"] {
             assert!(pv.get(key).is_some(), "ModuleProgress missing camelCase key {key:?}");
         }
+    }
+
+    #[test]
+    fn summary_and_recent_scores_aggregate_across_all_modules() {
+        let store = Store::open_in_memory().unwrap();
+        store.add_score(&ScoreEntry { id: "1".into(), module: "eq".into(), score: 500, rounds: 3, level: 1, streak: 2, created_at: "2026-01-01T00:00:00Z".into() }).unwrap();
+        store.add_score(&ScoreEntry { id: "2".into(), module: "reverb".into(), score: 300, rounds: 2, level: 1, streak: 5, created_at: "2026-01-02T00:00:00Z".into() }).unwrap();
+
+        let summary = store.summary().unwrap();
+        assert_eq!(summary.total_points, 800);
+        assert_eq!(summary.total_rounds, 5);
+        assert_eq!(summary.session_count, 2);
+        assert_eq!(summary.best_streak, 5);
+        assert_eq!(summary.avg_score, 400);
+
+        let recent = store.recent_scores(10).unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].id, "2", "newest first");
     }
 
     #[test]
