@@ -2,6 +2,13 @@
 node_modules/
 .npm
 
+# Rust build output (workspace + tauri) — never commit compiled artifacts
+target/
+src-tauri/target/
+
+# Build output (electron-builder) — legacy, kept for branch parity
+desktop/dist/
+
 # Runtime data (persisted via Docker volume — never commit live data)
 backend/src/data/users.json
 backend/src/data/scores.json
