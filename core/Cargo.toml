@@ -11,6 +11,7 @@ rustfft = "6"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
+hound = "3"
 
 [dev-dependencies]
 approx = "0.5"

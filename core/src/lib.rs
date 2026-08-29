@@ -1,6 +1,7 @@
 pub mod buffer;
 pub mod decode;
 pub mod dsp;
+pub mod encode;
 pub mod error;
 pub mod exercise;
 

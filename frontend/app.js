@@ -86,6 +86,14 @@ class App {
 
   async init() {
     this.setupEventListeners();
+    if (window.__TAURI__) {
+      // Desktop build: no network auth, single local profile.
+      // (Full local-profile onboarding is planned but not built yet —
+      // see /root/.claude/plans — this is a placeholder identity.)
+      CURRENT_USER = { username: 'Lokal', role: 'admin' };
+      this.showApp();
+      return;
+    }
     if (TOKEN) {
       try {
         const res = await apiCall('POST', '/auth/verify');

@@ -15,7 +15,7 @@ class GameState {
     this.lastResult = null;
     this.sessionScore = 0;
     this.roundStartTime = null;
-    this.currentAudioFile = null;
+    this.currentExerciseId = null; // set by startNewRound(), consumed by submitGuess()
   }
 
   getToleranceOctaves() {
@@ -23,37 +23,10 @@ class GameState {
     return tol[this.level] || 0.25;
   }
 
-  checkGuess(targetFreq, guessFreq) {
-    const octaveDist = Math.abs(Math.log2(guessFreq / targetFreq));
-    const tolerance = this.getToleranceOctaves();
-    const hit = octaveDist <= tolerance;
-    const secondsTaken = (Date.now() - this.roundStartTime) / 1000;
-    let points = 0;
-
-    if (hit) {
-      const maxPoints = 1000;
-      const maxTime = 10;
-      const timeFactor = Math.max(0, 1 - (secondsTaken / maxTime));
-      const precisionFactor = 1 - (octaveDist / tolerance);
-      points = Math.round(maxPoints * timeFactor * precisionFactor);
-      points = Math.max(0, points);
-      if (this.streak >= 3) points += Math.round(points * 0.1);
-      this.streak++;
-    } else {
-      this.streak = 0;
-    }
-
-    return { hit, octaveDist, points, secondsTaken };
-  }
-
-  getRandomTargetFreq(freqMin = 20, freqMax = 20000) {
-    // True random on log scale within the user-defined range
-    const logMin = Math.log2(freqMin);
-    const logMax = Math.log2(freqMax);
-    const logFreq = logMin + Math.random() * (logMax - logMin);
-    // Round to nearest musically meaningful value (semitone grid)
-    return Math.round(Math.pow(2, Math.round(logFreq * 12) / 12));
-  }
+  // Target-frequency generation and guess scoring both moved server-side to
+  // paw-core::exercise::eq (Rust) — see AudioEngine/startNewRound/submitGuess
+  // below — so the target frequency is never known client-side until the
+  // eq_evaluate response reveals it.
 
   reset() {
     this.lives = 3;
@@ -178,67 +151,98 @@ class FrequencyScale {
   }
 }
 
+// ─── Tauri bridge helpers ──────────────────────────────────────────────────────
+// The exercise clips are now rendered server-side by the Rust core (paw-core)
+// instead of live client-side BiquadFilter DSP — see /root/.claude/plans
+// (or docs/) for why: consistent, portable DSP across desktop platforms.
+async function invokeTauri(cmd, args) {
+  if (!window.__TAURI__) throw new Error('Nicht in der Desktop-App — Tauri-Bridge fehlt.');
+  return window.__TAURI__.core.invoke(cmd, args);
+}
+
+function tauriFileUrl(path) {
+  return window.__TAURI__.core.convertFileSrc(path);
+}
+
+async function fetchAndDecode(ctx, url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Audio-Download fehlgeschlagen');
+  const arrayBuffer = await res.arrayBuffer();
+  return new Promise((resolve, reject) => ctx.decodeAudioData(arrayBuffer, resolve, reject));
+}
+
 // ─── Audio Engine ─────────────────────────────────────────────────────────────
+// Dry and processed clips arrive as two pre-rendered WAV files (rendered by
+// paw-core::exercise::eq — real RBJ peaking EQ, not a live BiquadFilterNode).
+// Both loop in perfect sync; A/B toggling is just muting/unmuting one path,
+// same instant-switch feel as the old live-filter version.
 class AudioEngine {
   constructor(audioContext) {
     this.ctx = audioContext;
-    this.sourceNode = null;
+    this.drySource = null;
+    this.wetSource = null;
     this.dryGain = this.ctx.createGain();
     this.wetGain = this.ctx.createGain();
-    this.biquadFilter = this.ctx.createBiquadFilter();
-    this.gainCompensation = this.ctx.createGain();
     this.masterGain = this.ctx.createGain();
     this.analyser = this.ctx.createAnalyser();
 
     this.dryGain.gain.value = 1.0;
     this.wetGain.gain.value = 0.0;
-    this.gainCompensation.gain.value = Math.pow(10, -2.5 / 20);
     this.masterGain.gain.value = 0.85;
     this.analyser.fftSize = 2048;
     this.analyser.smoothingTimeConstant = 0.8;
 
-    this.biquadFilter.type = 'peaking';
-    this.biquadFilter.Q.value = 4.0;   // narrow enough to be clearly audible
-    this.biquadFilter.gain.value = 12; // +12 dB — unmistakable peak
-
     // Main audio graph: dry + wet paths → masterGain → analyser → destination
     this.dryGain.connect(this.masterGain);
-    this.wetGain.connect(this.biquadFilter);
-    this.biquadFilter.connect(this.gainCompensation);
-    this.gainCompensation.connect(this.masterGain);
+    this.wetGain.connect(this.masterGain);
     this.masterGain.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
 
     this.isPlaying = false;
     this.eqEnabled = false;
+    this.dryBuffer = null;
+    this.wetBuffer = null;
   }
 
-  async loadAudioBuffer(arrayBuffer) {
-    return new Promise((resolve, reject) => {
-      this.ctx.decodeAudioData(arrayBuffer, (buf) => {
-        this.audioBuffer = buf;
-        resolve(buf);
-      }, reject);
-    });
+  async loadDryWet(dryUrl, wetUrl) {
+    const [dryBuf, wetBuf] = await Promise.all([
+      fetchAndDecode(this.ctx, dryUrl),
+      fetchAndDecode(this.ctx, wetUrl),
+    ]);
+    this.dryBuffer = dryBuf;
+    this.wetBuffer = wetBuf;
   }
 
   play() {
-    if (!this.audioBuffer) return;
+    if (!this.dryBuffer || !this.wetBuffer) return;
     if (this.isPlaying) this.stop();
-    this.sourceNode = this.ctx.createBufferSource();
-    this.sourceNode.buffer = this.audioBuffer;
-    this.sourceNode.loop = true;
-    this.sourceNode.connect(this.dryGain);
-    this.sourceNode.connect(this.wetGain);
-    this.sourceNode.start(0);
+    this.drySource = this.ctx.createBufferSource();
+    this.drySource.buffer = this.dryBuffer;
+    this.drySource.loop = true;
+    this.drySource.connect(this.dryGain);
+
+    this.wetSource = this.ctx.createBufferSource();
+    this.wetSource.buffer = this.wetBuffer;
+    this.wetSource.loop = true;
+    this.wetSource.connect(this.wetGain);
+
+    // Start both together, slightly in the future, so they stay sample-locked.
+    const startAt = this.ctx.currentTime + 0.05;
+    this.drySource.start(startAt);
+    this.wetSource.start(startAt);
     this.isPlaying = true;
   }
 
   stop() {
-    if (this.sourceNode) {
-      this.sourceNode.stop();
-      this.sourceNode.disconnect();
-      this.sourceNode = null;
+    if (this.drySource) {
+      this.drySource.stop();
+      this.drySource.disconnect();
+      this.drySource = null;
+    }
+    if (this.wetSource) {
+      this.wetSource.stop();
+      this.wetSource.disconnect();
+      this.wetSource = null;
     }
     this.isPlaying = false;
   }
@@ -264,16 +268,10 @@ class AudioEngine {
     this.eqEnabled = enabled;
   }
 
-  setEQFrequency(freq) {
-    this.biquadFilter.frequency.setValueAtTime(freq, this.ctx.currentTime);
-  }
-
   destroy() {
     this.stop();
     this.dryGain.disconnect();
     this.wetGain.disconnect();
-    this.biquadFilter.disconnect();
-    this.gainCompensation.disconnect();
     this.masterGain.disconnect();
     this.analyser.disconnect();
   }
@@ -501,17 +499,17 @@ class EQTrainerModule {
     if (loadingEl) loadingEl.style.display = 'block';
 
     try {
-      const fileInfo = await apiCall('GET', '/library/random');
-      this.gameState.currentAudioFile = fileInfo;
+      // Rust core picks a random library track, renders dry + EQ'd clips,
+      // and keeps the target frequency secret until we call eq_evaluate.
+      const exercise = await invokeTauri('eq_random', {
+        level: this.gameState.level,
+        freqMin: this.freqRangeMin,
+        freqMax: this.freqRangeMax,
+      });
+      this.currentExerciseId = exercise.exerciseId;
 
       const statusEl = this.container.querySelector('#status-text');
       if (statusEl) statusEl.textContent = 'Lade Audio…';
-
-      const audioRes = await fetch(`/api/library/${fileInfo.id}/audio`, {
-        headers: { 'Authorization': `Bearer ${TOKEN}` }
-      });
-      if (!audioRes.ok) throw new Error('Audio-Download fehlgeschlagen');
-      const arrayBuffer = await audioRes.arrayBuffer();
 
       if (!this.audioEngine) {
         this.audioEngine = new AudioEngine(this.app.getAudioContext());
@@ -519,17 +517,19 @@ class EQTrainerModule {
         this.audioEngine.stop();
       }
 
-      await this.audioEngine.loadAudioBuffer(arrayBuffer);
+      await this.audioEngine.loadDryWet(
+        tauriFileUrl(exercise.dryPath),
+        tauriFileUrl(exercise.processedPath)
+      );
 
       this.gameState.round++;
-      this.gameState.targetFreq = this.gameState.getRandomTargetFreq(this.freqRangeMin, this.freqRangeMax);
+      this.gameState.targetFreq = null; // unknown client-side until evaluate
       this.gameState.guessFreq = null;
       this.gameState.lastResult = null;
       this.gameState.roundStartTime = null;
 
       this.audioEngine.play();
       this.selectBypass();
-      this.audioEngine.setEQFrequency(this.gameState.targetFreq);
 
       if (loadingEl) loadingEl.style.display = 'none';
       this.enterGuessing();
@@ -564,20 +564,47 @@ class EQTrainerModule {
     }, 100);
   }
 
-  submitGuess(x) {
+  async submitGuess(x) {
     if (this.timerInterval) clearInterval(this.timerInterval);
 
-    this.gameState.guessFreq = this.freqScale.xToFreq(x);
+    const guessFreq = this.freqScale.xToFreq(x);
+    const secondsTaken = (Date.now() - this.gameState.roundStartTime) / 1000;
+    this.gameState.guessFreq = guessFreq;
     this.gameState.phase = 'revealed';
 
-    const result = this.gameState.checkGuess(this.gameState.targetFreq, this.gameState.guessFreq);
+    // Scoring is authoritative in the Rust core (paw-core::exercise::eq) —
+    // the target frequency was never sent to the client, so this call also
+    // reveals it for the first time.
+    let evalResult;
+    try {
+      evalResult = await invokeTauri('eq_evaluate', {
+        exerciseId: this.currentExerciseId,
+        guessFreq,
+        secondsTaken,
+      });
+    } catch (err) {
+      showToast(`Auswertung fehlgeschlagen: ${err}`, 'error');
+      this.gameState.phase = 'guessing';
+      this.updateUI();
+      return;
+    }
+
+    this.gameState.targetFreq = evalResult.correctFreq;
+    let points = evalResult.points;
+    // Preserve the streak-bonus UX from the original client-only version.
+    if (evalResult.hit && this.gameState.streak >= 3) {
+      points += Math.round(points * 0.1);
+    }
+    const result = { hit: evalResult.hit, octaveDist: evalResult.octaveDist, points, secondsTaken };
     this.gameState.lastResult = result;
 
     if (result.hit) {
+      this.gameState.streak++;
       this.gameState.score += result.points;
       this.gameState.sessionScore += result.points;
       this.showResult(true, result);
     } else {
+      this.gameState.streak = 0;
       this.gameState.lives--;
       this.showResult(false, result);
       if (this.gameState.lives <= 0) {
