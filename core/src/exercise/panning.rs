@@ -92,10 +92,17 @@ pub struct PanningResult {
 }
 
 pub fn evaluate_zone(exercise_zone_idx: usize, guess_zone_id: &str, seconds_taken: f32) -> PanningResult {
-    let guess_idx = PAN_ZONES.iter().position(|z| z.id == guess_zone_id).unwrap_or(usize::MAX);
-    let diff = (exercise_zone_idx as i64 - guess_idx as i64).unsigned_abs();
-    let correct = diff == 0;
-    let partial = diff == 1;
+    // Option, not a usize::MAX sentinel: casting MAX to i64 wraps around to
+    // -1, which used to make an unrecognized guess score as a false
+    // "neighbor" hit against zone index 0 instead of a real miss.
+    let guess_idx = PAN_ZONES.iter().position(|z| z.id == guess_zone_id);
+    let (correct, partial) = match guess_idx {
+        Some(idx) => {
+            let diff = (exercise_zone_idx as i64 - idx as i64).unsigned_abs();
+            (diff == 0, diff == 1)
+        }
+        None => (false, false),
+    };
     let time_factor = time_factor_45(seconds_taken);
     let score = ((if correct { 1000.0 } else if partial { 400.0 } else { 0.0 }) * time_factor).round() as u32;
     PanningResult { score, correct }
@@ -111,10 +118,16 @@ pub fn evaluate_value(pan_value: f32, guess_pan: f32, seconds_taken: f32) -> Pan
 }
 
 pub fn evaluate_width(step_idx: usize, guess_width_id: &str, seconds_taken: f32) -> PanningResult {
-    let guess_idx = WIDTH_STEPS.iter().position(|s| s.id == guess_width_id).unwrap_or(2); // default 'normal'
-    let diff = (step_idx as i64 - guess_idx as i64).unsigned_abs();
-    let correct = diff == 0;
-    let partial = diff == 1;
+    // Option here too — an unrecognized id must not silently score as
+    // though the user had picked 'normal'.
+    let guess_idx = WIDTH_STEPS.iter().position(|s| s.id == guess_width_id);
+    let (correct, partial) = match guess_idx {
+        Some(idx) => {
+            let diff = (step_idx as i64 - idx as i64).unsigned_abs();
+            (diff == 0, diff == 1)
+        }
+        None => (false, false),
+    };
     let time_factor = time_factor_45(seconds_taken);
     let score = ((if correct { 1000.0 } else if partial { 400.0 } else { 0.0 }) * time_factor).round() as u32;
     PanningResult { score, correct }
@@ -124,6 +137,23 @@ pub fn evaluate_width(step_idx: usize, guess_width_id: &str, seconds_taken: f32)
 mod tests {
     use super::*;
     use rand::SeedableRng;
+
+    #[test]
+    fn unrecognized_zone_guess_at_index_0_scores_zero_not_partial_credit() {
+        // Regression: guess_idx used to fall back to usize::MAX, which cast
+        // to i64 wraps to -1 — a diff of 1 against zone_idx=0 looked like a
+        // "neighbor" hit (400 pts) instead of a real miss (0 pts).
+        let r = evaluate_zone(0, "not-a-real-zone-id", 0.0);
+        assert!(!r.correct);
+        assert_eq!(r.score, 0);
+    }
+
+    #[test]
+    fn unrecognized_width_guess_at_index_0_scores_zero_not_partial_credit() {
+        let r = evaluate_width(0, "not-a-real-width-id", 0.0);
+        assert!(!r.correct);
+        assert_eq!(r.score, 0);
+    }
 
     #[test]
     fn level2_pan_value_rarely_lands_near_center() {

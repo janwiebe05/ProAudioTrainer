@@ -25,7 +25,7 @@ class ReverbTrainer {
     const el = this.container.querySelector('#rev-level');
     if (el) el.textContent = ['I','II','III'][l-1] || l;
   }
-  destroy() { this._destroyed = true; this.stopAudio(); this.stopTimer(); this.container.innerHTML = ''; }
+  destroy() { this._destroyed = true; this.stopAudio(); this.stopTimer(); if (this.player) { this.player.destroy(); this.player = null; } this.container.innerHTML = ''; }
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -167,7 +167,7 @@ class ReverbTrainer {
       this.setStatus('Identifiziere den Raumtyp!');
       this.phase = 'playing';
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       console.error('[ReverbTrainer]', err);
     }
   }
@@ -244,7 +244,7 @@ class ReverbTrainer {
       result.feedback = result.correct ? `Richtig: ${result.categoryLabel}` : `Falsch. Es war: ${result.categoryLabel}`;
       this.applyResult(result);
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       this.phase = 'playing';
       this.setControlsEnabled(true);
     }
@@ -286,7 +286,7 @@ class ReverbTrainer {
     if (this._scoreSubmitted) return;
     this._scoreSubmitted = true;
     this.stopAudio(); this.stopTimer(); this.phase = 'gameover';
-    try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'reverb' }); } catch {}
+    try { await new HighscoreManager().submit(this.score, this.round, this.level, this.streak, 'reverb'); } catch {}
     const overlay = this.container.querySelector('#rev-gameover');
     overlay.style.display = 'flex';
     this.container.querySelector('#rev-final-score').textContent  = this.score;

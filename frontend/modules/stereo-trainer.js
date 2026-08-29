@@ -38,6 +38,7 @@ class StereoTrainer {
     this._destroyed = true;
     this.stopAudio();
     this.stopTimer();
+    if (this.player) { this.player.destroy(); this.player = null; }
     this.container.innerHTML = '';
   }
 
@@ -178,7 +179,7 @@ class StereoTrainer {
       this.playAudio();
     } catch (err) {
       this.setLoading(false);
-      this.setStatus('Fehler: ' + err.message);
+      this.setStatus('Fehler: ' + err);
       this.phase = 'idle';
     }
   }
@@ -225,7 +226,7 @@ class StereoTrainer {
         this._scoreSubmitted = true;
         this.phase = 'gameover';
         this.setStatus('GAME OVER');
-        try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'stereo' }); } catch {}
+        try { await new HighscoreManager().submit(this.score, this.round, this.level, this.streak, 'stereo'); } catch {}
         // Zeige Gameover-Overlay
         const overlay = this.container.querySelector('#st-gameover');
         if (overlay) {
@@ -235,7 +236,7 @@ class StereoTrainer {
         }
       }
     } catch (err) {
-      this.setStatus('Fehler: ' + err.message);
+      this.setStatus('Fehler: ' + err);
       this.phase = 'idle';
     }
   }

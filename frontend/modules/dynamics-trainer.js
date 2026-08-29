@@ -64,6 +64,7 @@ class DynamicsTrainer {
     this._destroyed = true;
     this.stopAudio();
     this.stopTimer();
+    if (this.player) { this.player.destroy(); this.player = null; }
     this.container.innerHTML = '';
   }
 
@@ -315,7 +316,7 @@ class DynamicsTrainer {
       this.setStatus(hints[exercise.guessMode] || 'Höre das Audio!');
       this.phase = 'playing';
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       console.error('[DynamicsTrainer]', err);
     }
   }
@@ -503,7 +504,7 @@ class DynamicsTrainer {
         feedback: this.buildFeedback(guesses, evalResult.typeCorrect),
       });
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       this.phase = 'playing';
       this.setControlsEnabled(true);
     }
@@ -571,7 +572,7 @@ class DynamicsTrainer {
     this.phase = 'gameover';
 
     try {
-      await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'dynamics' });
+      await new HighscoreManager().submit(this.score, this.round, this.level, this.streak, 'dynamics');
     } catch {}
 
     const overlay = this.container.querySelector('#dyn-gameover');

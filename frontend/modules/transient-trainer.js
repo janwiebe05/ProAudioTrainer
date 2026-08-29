@@ -38,6 +38,7 @@ class TransientTrainer {
     this._destroyed = true;
     this.stopAudio();
     this.stopTimer();
+    if (this.player) { this.player.destroy(); this.player = null; }
     this.container.innerHTML = '';
   }
 
@@ -183,7 +184,7 @@ class TransientTrainer {
       this.playAudio();
     } catch (err) {
       this.setLoading(false);
-      this.setStatus('Fehler: ' + err.message);
+      this.setStatus('Fehler: ' + err);
       this.phase = 'idle';
     }
   }
@@ -230,7 +231,7 @@ class TransientTrainer {
         this._scoreSubmitted = true;
         this.phase = 'gameover';
         this.setStatus('GAME OVER');
-        try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'transient' }); } catch {}
+        try { await new HighscoreManager().submit(this.score, this.round, this.level, this.streak, 'transient'); } catch {}
         const overlay = this.container.querySelector('#tr-gameover');
         if (overlay) {
           this.container.querySelector('#tr-go-score').textContent = this.score;
@@ -239,7 +240,7 @@ class TransientTrainer {
         }
       }
     } catch (err) {
-      this.setStatus('Fehler: ' + err.message);
+      this.setStatus('Fehler: ' + err);
       this.phase = 'idle';
     }
   }

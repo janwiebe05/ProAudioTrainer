@@ -42,8 +42,15 @@ pub struct EqExercise {
 
 pub fn generate(level: u8, freq_min: Option<f32>, freq_max: Option<f32>, rng: &mut impl Rng) -> EqExercise {
     let cfg = level_config(level);
-    let freq_min = freq_min.unwrap_or(cfg.freq_min);
-    let freq_max = freq_max.unwrap_or(cfg.freq_max);
+    // Guard against bad input (e.g. a corrupted localStorage value on the
+    // client): freq_min<=0 sends log2() to -inf, and freq_min>=freq_max
+    // makes the log-uniform range empty — both used to produce a NaN
+    // target frequency that silently corrupted the rendered EQ instead of
+    // failing. Fall back to the level's own default range in either case.
+    let (freq_min, freq_max) = match (freq_min, freq_max) {
+        (Some(lo), Some(hi)) if lo > 0.0 && hi > lo => (lo, hi),
+        _ => (cfg.freq_min, cfg.freq_max),
+    };
     EqExercise {
         freq: random_frequency(freq_min, freq_max, rng),
         gain_db: cfg.gain_db,
@@ -93,6 +100,16 @@ pub fn evaluate(exercise: &EqExercise, guess_freq: f32, seconds_taken: f32) -> E
 mod tests {
     use super::*;
     use rand::SeedableRng;
+
+    #[test]
+    fn invalid_freq_range_falls_back_to_level_default_instead_of_nan() {
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        for (bad_min, bad_max) in [(0.0, 8000.0), (-100.0, 8000.0), (5000.0, 100.0), (1000.0, 1000.0)] {
+            let ex = generate(2, Some(bad_min), Some(bad_max), &mut rng);
+            assert!(ex.freq.is_finite(), "freq should never be NaN/inf for bad input ({bad_min}, {bad_max})");
+            assert!(ex.freq > 0.0);
+        }
+    }
 
     #[test]
     fn random_frequency_stays_within_bounds_and_on_semitone_grid() {

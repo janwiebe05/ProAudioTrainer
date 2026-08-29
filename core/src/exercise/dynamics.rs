@@ -179,10 +179,17 @@ pub fn evaluate(exercise: &DynamicsExercise, guess: &DynamicsGuess, seconds_take
     let score = match exercise.guess_mode {
         GuessMode::TypeOnly => ((if type_correct { 1000.0 } else { 0.0 }) * time_factor).round() as u32,
         GuessMode::TypeAmount => {
+            // Option, not a usize::MAX sentinel: casting MAX down to i32
+            // wraps around to -1, which used to make a missing guess score
+            // as a false "neighbor" hit against amount_index 0.
             let amount_idx = exercise.amount_index.unwrap_or(0) as i32;
-            let guess_amount = guess.amount.unwrap_or(usize::MAX) as i32;
-            let diff = (amount_idx - guess_amount).abs();
-            let amount_score = if diff == 0 { 600.0 } else if diff == 1 { 300.0 } else { 0.0 };
+            let amount_score = match guess.amount {
+                Some(guess_amount) => {
+                    let diff = (amount_idx - guess_amount as i32).abs();
+                    if diff == 0 { 600.0 } else if diff == 1 { 300.0 } else { 0.0 }
+                }
+                None => 0.0,
+            };
             (((if type_correct { 400.0 } else { 0.0 }) + amount_score) * time_factor).round() as u32
         }
         GuessMode::TypeParams => {
@@ -220,6 +227,24 @@ pub fn evaluate(exercise: &DynamicsExercise, guess: &DynamicsGuess, seconds_take
 mod tests {
     use super::*;
     use rand::SeedableRng;
+
+    #[test]
+    fn missing_amount_guess_at_index_0_scores_zero_not_partial_credit() {
+        // Regression: guess.amount defaulted to usize::MAX, which cast to
+        // i32 wraps to -1 — a diff of 1 against amount_index=0 looked like
+        // a "neighbor" hit (300 pts) instead of "no guess made" (0 pts).
+        let ex = DynamicsExercise {
+            effect: EffectType::Compressor,
+            params: amount_presets(EffectType::Compressor, 0),
+            amount_index: Some(0),
+            guess_mode: GuessMode::TypeAmount,
+            level: 2,
+        };
+        let g = DynamicsGuess { effect: Some(EffectType::Compressor), amount: None, threshold: None, ratio: None, attack_ms: None, release_ms: None, makeup_db: None };
+        let r = evaluate(&ex, &g, 0.0);
+        // type_correct contributes 400, but the missing amount guess must add 0, not 300.
+        assert_eq!(r.score, 400);
+    }
 
     #[test]
     fn generated_params_stay_within_declared_ranges() {

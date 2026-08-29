@@ -37,6 +37,12 @@ fn open_probed(path: &Path) -> Result<(Box<dyn symphonia::core::formats::FormatR
         .codec_params
         .sample_rate
         .ok_or_else(|| CoreError::UnsupportedFormat("unknown sample rate".into()))?;
+    // A malformed header can report Some(0) rather than None — reject it
+    // explicitly, since 0 silently divides-by-zero downstream (e.g.
+    // dsp::dynamics's one_pole_coeff) instead of failing loudly here.
+    if sample_rate == 0 {
+        return Err(CoreError::UnsupportedFormat("sample rate is zero".into()));
+    }
     let channels = track
         .codec_params
         .channels

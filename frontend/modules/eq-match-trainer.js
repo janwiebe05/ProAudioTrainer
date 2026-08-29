@@ -851,7 +851,7 @@ class EQMatchTrainerModule {
     document.getElementById('eqm-next-btn').addEventListener('click', () => this._newRound());
 
     this._setStatus('done', `Ergebnis: ${score} Punkte ${grade}`);
-    apiCall('POST', '/scores', { score, rounds: 1, level: this.exercise?.difficulty || 1, streak: 0, module: 'eq-match' }).catch(() => {});
+    new HighscoreManager().submit(score, 1, this.exercise?.difficulty || 1, 0, 'eq-match').catch(() => {});
   }
 
   _setStatus(type, text) {

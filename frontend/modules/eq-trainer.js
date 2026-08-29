@@ -413,7 +413,7 @@ class EQTrainerModule {
 
     } catch (err) {
       if (loadingEl) loadingEl.style.display = 'none';
-      showToast(`Fehler beim Laden: ${err.message}`, 'error');
+      showToast(`Fehler beim Laden: ${err}`, 'error');
       const statusEl = this.container.querySelector('#status-text');
       if (statusEl) statusEl.textContent = 'Fehler. Bitte Sound Library befüllen und erneut versuchen.';
       this.gameState.phase = 'idle';

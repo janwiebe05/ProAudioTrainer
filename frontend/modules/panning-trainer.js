@@ -22,7 +22,7 @@ class PanningTrainer {
 
   init()      { this.render(); this.bindEvents(); this.setStatus('Bereit. Drücke START um zu beginnen.'); }
   setLevel(l) { this.level = l; const el = this.container.querySelector('#pan-level'); if (el) el.textContent = ['I','II','III'][l-1] || l; }
-  destroy()   { this._destroyed = true; this.stopAudio(); this.stopTimer(); this.container.innerHTML = ''; }
+  destroy()   { this._destroyed = true; this.stopAudio(); this.stopTimer(); if (this.player) { this.player.destroy(); this.player = null; } this.container.innerHTML = ''; }
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -187,7 +187,7 @@ class PanningTrainer {
       this.setStatus({ zone: 'Stereoposition identifizieren!', value: 'Pan-Wert schätzen!', width: 'Stereobreite schätzen!' }[exercise.guessMode]);
       this.phase = 'playing';
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       console.error('[PanningTrainer]', err);
     }
   }
@@ -332,7 +332,7 @@ class PanningTrainer {
         feedback: this.buildFeedback(mode, guesses, evalResult.correct),
       });
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       this.phase = 'playing';
       this.setControlsEnabled(true);
     }
@@ -373,7 +373,7 @@ class PanningTrainer {
     if (this._scoreSubmitted) return;
     this._scoreSubmitted = true;
     this.stopAudio(); this.stopTimer(); this.phase = 'gameover';
-    try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'panning' }); } catch {}
+    try { await new HighscoreManager().submit(this.score, this.round, this.level, this.streak, 'panning'); } catch {}
     const overlay = this.container.querySelector('#pan-gameover');
     overlay.style.display = 'flex';
     this.container.querySelector('#pan-final-score').textContent = this.score;
