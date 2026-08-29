@@ -1,4 +1,5 @@
 use crate::state::{load_random_clip, write_dry_wet, AppState};
+use paw_core::store::Store;
 use paw_core::exercise::eq::{self, EqExercise};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -26,11 +27,12 @@ pub fn eq_random_impl(
     freq_min: Option<f32>,
     freq_max: Option<f32>,
     library_dir: &std::path::Path,
+    db: &Store,
     cache_dir: &std::path::Path,
     exercises: &Mutex<HashMap<String, EqExercise>>,
 ) -> Result<EqRandomResponse, String> {
     let mut rng = rand::thread_rng();
-    let dry = load_random_clip(library_dir, &mut rng)?;
+    let dry = load_random_clip(library_dir, db, &mut rng)?;
 
     let exercise = eq::generate(level, freq_min, freq_max, &mut rng);
     let wet = eq::render(&dry, &exercise);
@@ -71,7 +73,7 @@ pub fn eq_random(
     freq_max: Option<f32>,
     state: tauri::State<AppState>,
 ) -> Result<EqRandomResponse, String> {
-    eq_random_impl(level, freq_min, freq_max, &state.library_dir, &state.cache_dir, &state.eq_exercises)
+    eq_random_impl(level, freq_min, freq_max, &state.library_dir, &state.db, &state.cache_dir, &state.eq_exercises)
 }
 
 #[tauri::command]

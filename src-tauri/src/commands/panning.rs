@@ -1,4 +1,5 @@
 use crate::state::{load_random_clip, write_dry_wet, AppState};
+use paw_core::store::Store;
 use paw_core::exercise::panning::{self, PanZone, PanningExercise, WidthStep, PAN_ZONES, WIDTH_STEPS};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -30,11 +31,12 @@ pub struct PanningRandomResponse {
 pub fn panning_random_impl(
     level: u8,
     library_dir: &std::path::Path,
+    db: &Store,
     cache_dir: &std::path::Path,
     exercises: &Mutex<HashMap<String, PanningExercise>>,
 ) -> Result<PanningRandomResponse, String> {
     let mut rng = rand::thread_rng();
-    let dry = load_random_clip(library_dir, &mut rng)?;
+    let dry = load_random_clip(library_dir, db, &mut rng)?;
 
     let exercise = panning::generate(level, &mut rng);
     let wet = panning::render(&dry, &exercise);
@@ -95,7 +97,7 @@ pub fn panning_evaluate_impl(
 
 #[tauri::command]
 pub fn panning_random(level: u8, state: tauri::State<AppState>) -> Result<PanningRandomResponse, String> {
-    panning_random_impl(level, &state.library_dir, &state.cache_dir, &state.panning_exercises)
+    panning_random_impl(level, &state.library_dir, &state.db, &state.cache_dir, &state.panning_exercises)
 }
 
 #[tauri::command]

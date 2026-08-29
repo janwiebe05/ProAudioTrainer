@@ -1,10 +1,13 @@
 mod commands;
 mod library;
+mod profile;
+mod scores;
 mod state;
 
 #[cfg(test)]
 mod tests;
 
+use paw_core::store::Store;
 use state::AppState;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,17 +35,22 @@ fn resolve_content_dir(app: &tauri::AppHandle) -> PathBuf {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let library_dir = app.path().app_local_data_dir()?.join("library");
+            let data_dir = app.path().app_local_data_dir()?;
+            let library_dir = data_dir.join("library");
             let cache_dir = app.path().app_cache_dir()?.join("exercises");
             let content_dir = resolve_content_dir(app.handle());
             std::fs::create_dir_all(&library_dir)?;
             std::fs::create_dir_all(&cache_dir)?;
 
+            let db = Store::open(&data_dir.join("data.db"))?;
+
             app.manage(AppState {
                 library_dir,
                 cache_dir,
                 content_dir,
+                db,
                 eq_exercises: Mutex::new(HashMap::new()),
                 dynamics_exercises: Mutex::new(HashMap::new()),
                 panning_exercises: Mutex::new(HashMap::new()),
@@ -65,8 +73,15 @@ pub fn run() {
             commands::transient::transient_evaluate,
             commands::reverb::reverb_random,
             commands::reverb::reverb_evaluate,
-            library::library_count,
-            library::library_import,
+            library::library_list,
+            library::library_upload,
+            library::library_toggle_active,
+            library::library_delete,
+            profile::profile_get,
+            profile::profile_set,
+            scores::scores_submit,
+            scores::scores_top,
+            scores::progress_overview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

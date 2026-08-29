@@ -1,4 +1,5 @@
 use crate::state::{load_random_clip, write_dry_wet, AppState};
+use paw_core::store::Store;
 use paw_core::decode;
 use paw_core::exercise::reverb::{self, category_label, ReverbExercise, CATEGORIES};
 use serde::Serialize;
@@ -32,12 +33,13 @@ pub struct ReverbRandomResponse {
 pub fn reverb_random_impl(
     level: u8,
     library_dir: &std::path::Path,
+    db: &Store,
     content_dir: &std::path::Path,
     cache_dir: &std::path::Path,
     exercises: &Mutex<HashMap<String, ReverbExercise>>,
 ) -> Result<ReverbRandomResponse, String> {
     let mut rng = rand::thread_rng();
-    let dry = load_random_clip(library_dir, &mut rng)?;
+    let dry = load_random_clip(library_dir, db, &mut rng)?;
 
     let exercise = reverb::generate(level, &mut rng);
     let ir_path = resolve_ir_path(content_dir, exercise.ir_rel_path);
@@ -98,7 +100,7 @@ fn all_categories() -> &'static [&'static str] {
 
 #[tauri::command]
 pub fn reverb_random(level: u8, state: tauri::State<AppState>) -> Result<ReverbRandomResponse, String> {
-    reverb_random_impl(level, &state.library_dir, &state.content_dir, &state.cache_dir, &state.reverb_exercises)
+    reverb_random_impl(level, &state.library_dir, &state.db, &state.content_dir, &state.cache_dir, &state.reverb_exercises)
 }
 
 #[tauri::command]

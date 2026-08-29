@@ -5,17 +5,18 @@
 
 use crate::commands::eq::{eq_evaluate_impl, eq_random_impl};
 use paw_core::exercise::eq::EqExercise;
+use paw_core::store::{Store, Track};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// Generates a fresh, self-contained synthetic test library on disk (a
-/// ~35s two-tone WAV with a slow amplitude envelope, long/varied enough to
+/// Generates a fresh, self-contained synthetic test library: a ~35s
+/// two-tone WAV with a slow amplitude envelope (long/varied enough to
 /// exercise decode windowing, EQ, dynamics, pan/width and reverb
-/// meaningfully) rather than depending on a real audio file placed
-/// out-of-band — keeps the test suite reproducible on any machine/CI
-/// without a manual setup step.
-fn test_library_dir() -> PathBuf {
+/// meaningfully), registered as a shared (owner=None, so visible to any
+/// profile), active track in a fresh in-memory Store. No external fixture
+/// or manual setup step needed — reproducible on any machine/CI.
+fn test_library() -> (PathBuf, Store) {
     use std::f32::consts::PI;
     let dir = std::env::temp_dir().join(format!("paw-synth-lib-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -32,23 +33,38 @@ fn test_library_dir() -> PathBuf {
         }
     }
     let bytes = paw_core::encode::encode_wav_i16(&buf).expect("synth fixture should encode");
-    std::fs::write(dir.join("track.wav"), bytes).expect("synth fixture should write");
-    dir
+    let filename = "track.wav";
+    std::fs::write(dir.join(filename), bytes).expect("synth fixture should write");
+
+    let db = Store::open_in_memory().expect("in-memory store should open");
+    db.add_track(&Track {
+        id: "synthetic-track".to_string(),
+        filename: filename.to_string(),
+        original_name: "Synthetic Test Track.wav".to_string(),
+        size: 0,
+        duration: None,
+        mime_type: Some("audio/wav".to_string()),
+        active: true,
+        owner: None,
+        added_at: "2026-01-01T00:00:00Z".to_string(),
+    }).expect("registering the synthetic track should succeed");
+
+    (dir, db)
 }
 
-/// Full vertical-slice pipeline test against a real audio file: scan
-/// library -> probe duration -> decode a clip -> generate an EQ exercise
-/// -> render dry+wet -> write WAV files -> evaluate a guess.
+/// Full vertical-slice pipeline test against real (synthetic) audio: DB
+/// track lookup -> probe duration -> decode a clip -> generate an EQ
+/// exercise -> render dry+wet -> write WAV files -> evaluate a guess.
 #[test]
 fn eq_random_then_evaluate_round_trip_against_real_audio() {
-    let lib_dir = test_library_dir();
+    let (lib_dir, db) = test_library();
 
     let cache_dir = PathBuf::from("/tmp/paw-test-cache");
     let _ = std::fs::remove_dir_all(&cache_dir);
     let exercises: Mutex<HashMap<String, EqExercise>> = Mutex::new(HashMap::new());
 
-    let response = eq_random_impl(2, None, None, &lib_dir, &cache_dir, &exercises)
-        .expect("eq_random_impl should succeed against the real test fixture");
+    let response = eq_random_impl(2, None, None, &lib_dir, &db, &cache_dir, &exercises)
+        .expect("eq_random_impl should succeed against the synthetic test fixture");
 
     assert!(PathBuf::from(&response.dry_path).exists());
     assert!(PathBuf::from(&response.processed_path).exists());
@@ -80,14 +96,16 @@ fn eq_random_then_evaluate_round_trip_against_real_audio() {
 fn eq_random_fails_gracefully_on_empty_library() {
     let empty_dir = PathBuf::from("/tmp/paw-test-empty-library");
     std::fs::create_dir_all(&empty_dir).unwrap();
+    let empty_db = Store::open_in_memory().unwrap(); // no tracks registered
     let cache_dir = PathBuf::from("/tmp/paw-test-cache-2");
     let exercises: Mutex<HashMap<String, EqExercise>> = Mutex::new(HashMap::new());
 
-    let result = eq_random_impl(1, None, None, &empty_dir, &cache_dir, &exercises);
+    let result = eq_random_impl(1, None, None, &empty_dir, &empty_db, &cache_dir, &exercises);
     assert!(result.is_err());
 }
 
 mod dynamics_tests {
+    use super::test_library;
     use crate::commands::dynamics::dynamics_random_impl;
     use paw_core::exercise::dynamics::DynamicsExercise;
     use std::collections::HashMap;
@@ -96,11 +114,11 @@ mod dynamics_tests {
 
     #[test]
     fn dynamics_random_renders_real_clips() {
-        let lib_dir = super::test_library_dir();
+        let (lib_dir, db) = test_library();
         let cache_dir = PathBuf::from("/tmp/paw-test-cache-dynamics");
         let exercises: Mutex<HashMap<String, DynamicsExercise>> = Mutex::new(HashMap::new());
 
-        let response = dynamics_random_impl(1, &lib_dir, &cache_dir, &exercises)
+        let response = dynamics_random_impl(1, &lib_dir, &db, &cache_dir, &exercises)
             .expect("dynamics_random_impl should succeed");
         assert!(PathBuf::from(&response.dry_path).exists());
         assert!(PathBuf::from(&response.processed_path).exists());
@@ -122,6 +140,7 @@ mod dynamics_tests {
 }
 
 mod reverb_tests {
+    use super::test_library;
     use crate::commands::reverb::reverb_random_impl;
     use paw_core::exercise::reverb::ReverbExercise;
     use std::collections::HashMap;
@@ -136,13 +155,13 @@ mod reverb_tests {
 
     #[test]
     fn reverb_random_convolves_against_a_real_ir() {
-        let lib_dir = super::test_library_dir();
+        let (lib_dir, db) = test_library();
         let content_dir = content_dir();
         assert!(content_dir.join("EchoThief").is_dir(), "EchoThief content dir missing under {content_dir:?}");
         let cache_dir = PathBuf::from("/tmp/paw-test-cache-reverb");
         let exercises: Mutex<HashMap<String, ReverbExercise>> = Mutex::new(HashMap::new());
 
-        let response = reverb_random_impl(1, &lib_dir, &content_dir, &cache_dir, &exercises)
+        let response = reverb_random_impl(1, &lib_dir, &db, &content_dir, &cache_dir, &exercises)
             .expect("reverb_random_impl should succeed against a real IR file");
         assert!(PathBuf::from(&response.dry_path).exists());
         assert!(PathBuf::from(&response.processed_path).exists());
@@ -150,15 +169,8 @@ mod reverb_tests {
     }
 }
 
-/// Guards against the exact bug found during development: a core Result
-/// struct without #[serde(rename_all = "camelCase")] silently serializes as
-/// snake_case, which the frontend (written expecting camelCase, matching
-/// how Tauri auto-converts command *arguments*) would never notice until a
-/// live click — return-value serialization is NOT auto-converted by Tauri,
-/// unlike command arguments. Check every field name a JS module reads by
-/// dot-notation off a `*_evaluate`/`*_random` response is actually camelCase
-/// (or single-word, where casing is moot) in the wire JSON.
 mod panning_tests {
+    use super::test_library;
     use crate::commands::panning::panning_random_impl;
     use paw_core::exercise::panning::PanningExercise;
     use std::collections::HashMap;
@@ -167,11 +179,11 @@ mod panning_tests {
 
     #[test]
     fn panning_random_renders_real_clips_with_camel_case_json() {
-        let lib_dir = super::test_library_dir();
+        let (lib_dir, db) = test_library();
         let cache_dir = PathBuf::from("/tmp/paw-test-cache-panning");
         let exercises: Mutex<HashMap<String, PanningExercise>> = Mutex::new(HashMap::new());
 
-        let response = panning_random_impl(1, &lib_dir, &cache_dir, &exercises)
+        let response = panning_random_impl(1, &lib_dir, &db, &cache_dir, &exercises)
             .expect("panning_random_impl should succeed");
         assert!(PathBuf::from(&response.dry_path).exists());
         assert!(PathBuf::from(&response.processed_path).exists());
@@ -186,6 +198,7 @@ mod panning_tests {
 }
 
 mod stereo_tests {
+    use super::test_library;
     use crate::commands::stereo::stereo_random_impl;
     use paw_core::exercise::stereo::StereoExercise;
     use std::collections::HashMap;
@@ -194,11 +207,11 @@ mod stereo_tests {
 
     #[test]
     fn stereo_random_renders_real_clips() {
-        let lib_dir = super::test_library_dir();
+        let (lib_dir, db) = test_library();
         let cache_dir = PathBuf::from("/tmp/paw-test-cache-stereo");
         let exercises: Mutex<HashMap<String, StereoExercise>> = Mutex::new(HashMap::new());
 
-        let response = stereo_random_impl(2, &lib_dir, &cache_dir, &exercises)
+        let response = stereo_random_impl(2, &lib_dir, &db, &cache_dir, &exercises)
             .expect("stereo_random_impl should succeed");
         assert!(PathBuf::from(&response.dry_path).exists());
         assert!(PathBuf::from(&response.processed_path).exists());
@@ -207,6 +220,7 @@ mod stereo_tests {
 }
 
 mod transient_tests {
+    use super::test_library;
     use crate::commands::transient::transient_random_impl;
     use paw_core::exercise::transient::TransientExercise;
     use std::collections::HashMap;
@@ -215,11 +229,11 @@ mod transient_tests {
 
     #[test]
     fn transient_random_renders_real_clips() {
-        let lib_dir = super::test_library_dir();
+        let (lib_dir, db) = test_library();
         let cache_dir = PathBuf::from("/tmp/paw-test-cache-transient");
         let exercises: Mutex<HashMap<String, TransientExercise>> = Mutex::new(HashMap::new());
 
-        let response = transient_random_impl(3, &lib_dir, &cache_dir, &exercises)
+        let response = transient_random_impl(3, &lib_dir, &db, &cache_dir, &exercises)
             .expect("transient_random_impl should succeed");
         assert!(PathBuf::from(&response.dry_path).exists());
         assert!(PathBuf::from(&response.processed_path).exists());
@@ -227,8 +241,16 @@ mod transient_tests {
     }
 }
 
+/// Guards against the exact bug found during development: a core Result
+/// struct without #[serde(rename_all = "camelCase")] silently serializes as
+/// snake_case, which the frontend (written expecting camelCase, matching
+/// how Tauri auto-converts command *arguments*) would never notice until a
+/// live click — return-value serialization is NOT auto-converted by Tauri,
+/// unlike command arguments. Check every field name a JS module reads by
+/// dot-notation off a `*_evaluate`/`*_random` response is actually camelCase
+/// (or single-word, where casing is moot) in the wire JSON.
 mod camel_case_response_shape {
-        fn assert_has_camel_keys(value: &serde_json::Value, expected_keys: &[&str]) {
+    fn assert_has_camel_keys(value: &serde_json::Value, expected_keys: &[&str]) {
         let obj = value.as_object().expect("expected a JSON object");
         for key in expected_keys {
             assert!(
@@ -255,7 +277,6 @@ mod camel_case_response_shape {
         let v = serde_json::to_value(&r).unwrap();
         assert_has_camel_keys(&v, &["score", "typeCorrect"]);
     }
-
 
     #[test]
     fn panning_result_fields_are_single_word_no_case_ambiguity() {

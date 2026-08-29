@@ -1,4 +1,5 @@
 use crate::state::{load_random_clip, write_dry_wet, AppState};
+use paw_core::store::Store;
 use paw_core::exercise::dynamics::{self, DynamicsExercise, DynamicsGuess, EffectType, GuessMode};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -53,11 +54,12 @@ pub struct DynamicsRandomResponse {
 pub fn dynamics_random_impl(
     level: u8,
     library_dir: &std::path::Path,
+    db: &Store,
     cache_dir: &std::path::Path,
     exercises: &Mutex<HashMap<String, DynamicsExercise>>,
 ) -> Result<DynamicsRandomResponse, String> {
     let mut rng = rand::thread_rng();
-    let dry = load_random_clip(library_dir, &mut rng)?;
+    let dry = load_random_clip(library_dir, db, &mut rng)?;
 
     let exercise = dynamics::generate(level, &mut rng);
     let wet = dynamics::render(&dry, &exercise);
@@ -116,7 +118,7 @@ pub fn dynamics_evaluate_impl(
 
 #[tauri::command]
 pub fn dynamics_random(level: u8, state: tauri::State<AppState>) -> Result<DynamicsRandomResponse, String> {
-    dynamics_random_impl(level, &state.library_dir, &state.cache_dir, &state.dynamics_exercises)
+    dynamics_random_impl(level, &state.library_dir, &state.db, &state.cache_dir, &state.dynamics_exercises)
 }
 
 #[tauri::command]

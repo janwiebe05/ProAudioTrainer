@@ -28,3 +28,6 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Tauri auto-generated capability schemas (regenerated on every build)
+src-tauri/gen/schemas/

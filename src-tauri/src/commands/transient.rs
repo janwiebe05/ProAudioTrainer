@@ -1,4 +1,5 @@
 use crate::state::{load_random_clip, write_dry_wet, AppState};
+use paw_core::store::Store;
 use paw_core::exercise::transient::{self, TransientExercise};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -24,11 +25,12 @@ pub struct TransientRandomResponse {
 pub fn transient_random_impl(
     level: u8,
     library_dir: &std::path::Path,
+    db: &Store,
     cache_dir: &std::path::Path,
     exercises: &Mutex<HashMap<String, TransientExercise>>,
 ) -> Result<TransientRandomResponse, String> {
     let mut rng = rand::thread_rng();
-    let dry = load_random_clip(library_dir, &mut rng)?;
+    let dry = load_random_clip(library_dir, db, &mut rng)?;
 
     let exercise = transient::generate(level, &mut rng);
     let wet = transient::render(&dry, &exercise);
@@ -81,7 +83,7 @@ pub fn transient_evaluate_impl(
 
 #[tauri::command]
 pub fn transient_random(level: u8, state: tauri::State<AppState>) -> Result<TransientRandomResponse, String> {
-    transient_random_impl(level, &state.library_dir, &state.cache_dir, &state.transient_exercises)
+    transient_random_impl(level, &state.library_dir, &state.db, &state.cache_dir, &state.transient_exercises)
 }
 
 #[tauri::command]

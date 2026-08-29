@@ -37,16 +37,39 @@ function showToast(message, type = 'info', duration = 3000) {
 class HighscoreManager {
   async submit(score, rounds, level, streak, module = 'eq') {
     try {
-      await apiCall('POST', '/scores', { score, rounds, level, streak, module });
+      if (window.__TAURI__) {
+        await invokeTauri('scores_submit', { module, score, rounds, level, streak });
+      } else {
+        await apiCall('POST', '/scores', { score, rounds, level, streak, module });
+      }
     } catch (err) {
-      console.warn('Score submit error:', err.message);
+      console.warn('Score submit error:', err);
     }
   }
 
+  // Desktop: no multi-user leaderboard (single local profile) — shows each
+  // module's personal best instead of a global rank/username list.
   async renderTo(elementId) {
     const el = document.getElementById(elementId);
     if (!el) return;
     try {
+      if (window.__TAURI__) {
+        const overview = await invokeTauri('progress_overview');
+        if (!overview || overview.length === 0) {
+          el.innerHTML = '<div class="hs-entry"><span class="hs-rank">—</span><span class="hs-name">—</span><span class="hs-score">—</span></div>';
+          return;
+        }
+        const sorted = [...overview].sort((a, b) => b.bestScore - a.bestScore);
+        el.innerHTML = sorted.map((m, i) => `
+          <div class="hs-entry">
+            <span class="hs-rank">${i + 1}</span>
+            <span class="hs-name">${m.module.toUpperCase()}</span>
+            <span class="hs-score">${m.bestScore}</span>
+          </div>
+        `).join('');
+        return;
+      }
+
       const scores = await apiCall('GET', '/scores/highscores');
       if (!scores || scores.length === 0) {
         el.innerHTML = '<div class="hs-entry"><span class="hs-rank">—</span><span class="hs-name">—</span><span class="hs-score">—</span></div>';
@@ -60,7 +83,7 @@ class HighscoreManager {
         </div>
       `).join('');
     } catch (err) {
-      console.warn('Highscore load error:', err.message);
+      console.warn('Highscore load error:', err);
     }
   }
 }
@@ -87,11 +110,16 @@ class App {
   async init() {
     this.setupEventListeners();
     if (window.__TAURI__) {
-      // Desktop build: no network auth, single local profile.
-      // (Full local-profile onboarding is planned but not built yet —
-      // see /root/.claude/plans — this is a placeholder identity.)
-      CURRENT_USER = { username: 'Lokal', role: 'admin' };
-      this.showApp();
+      // Desktop build: no network auth. A single local profile (just a
+      // display name, no password) is created once on first launch and
+      // reused on every subsequent start.
+      const existingName = await invokeTauri('profile_get').catch(() => null);
+      if (existingName) {
+        CURRENT_USER = { username: existingName, role: 'local' };
+        this.showApp();
+      } else {
+        this.showOnboarding();
+      }
       return;
     }
     if (TOKEN) {
@@ -114,6 +142,22 @@ class App {
     document.getElementById('login-screen').style.display = 'flex';
     document.getElementById('app-shell').style.display = 'none';
     this.startLoginVU();
+  }
+
+  // Desktop-only: first-launch profile creation. Reuses the login screen's
+  // chassis/VU-meter chrome, just repurposes the form for a single
+  // "what's your name" field instead of username+password auth.
+  showOnboarding() {
+    this._onboarding = true;
+    const passwordGroup = document.getElementById('login-password')?.closest('.form-group');
+    if (passwordGroup) passwordGroup.style.display = 'none';
+    const usernameLabel = document.querySelector('#login-form .form-group .form-label');
+    if (usernameLabel) usernameLabel.textContent = 'DEIN NAME';
+    const usernameInput = document.getElementById('login-username');
+    if (usernameInput) usernameInput.placeholder = 'z.B. Jan';
+    const btn = document.getElementById('login-btn');
+    if (btn) btn.lastChild.textContent = 'WEITER';
+    this.showLogin();
   }
 
   showApp() {
@@ -212,6 +256,20 @@ class App {
       errorEl.textContent = '';
       btn.disabled = true;
       if (led) led.classList.add('active');
+
+      if (this._onboarding) {
+        // Desktop first-launch: create the local profile, no auth involved.
+        try {
+          await invokeTauri('profile_set', { username });
+          CURRENT_USER = { username, role: 'local' };
+          this.showApp();
+        } catch (err) {
+          errorEl.textContent = String(err);
+          if (led) led.classList.remove('active');
+          btn.disabled = false;
+        }
+        return;
+      }
 
       try {
         const res = await fetch('/api/auth/login', {

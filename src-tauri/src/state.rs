@@ -1,8 +1,10 @@
 //! Shared app state and the one bit of decode/pick logic every exercise
-//! command needs: grab a random library track and decode a clip from it.
+//! command needs: grab a random accessible+active library track (via the
+//! SQLite-backed Store) and decode a clip from it.
 
 use paw_core::exercise::common::CLIP_DURATION_SECS;
 use paw_core::exercise::{dynamics, eq, panning, reverb, stereo, transient};
+use paw_core::store::Store;
 use paw_core::{decode, AudioBuffer};
 use rand::Rng;
 use std::collections::HashMap;
@@ -17,6 +19,7 @@ pub struct AppState {
     /// Resolved relative to the frontend dist dir in dev, and to the Tauri
     /// resource dir once packaged (see lib.rs setup()).
     pub content_dir: PathBuf,
+    pub db: Store,
     pub eq_exercises: Mutex<HashMap<String, eq::EqExercise>>,
     pub dynamics_exercises: Mutex<HashMap<String, dynamics::DynamicsExercise>>,
     pub panning_exercises: Mutex<HashMap<String, panning::PanningExercise>>,
@@ -30,11 +33,23 @@ pub fn pick_start_time(duration_secs: f64, rng: &mut impl Rng) -> f64 {
     rng.gen::<f64>() * range
 }
 
-/// Pick a random track from `library_dir` and decode one CLIP_DURATION_SECS
-/// window from a random position in it.
-pub fn load_random_clip(library_dir: &Path, rng: &mut impl Rng) -> Result<AudioBuffer, String> {
-    let track_path = crate::library::pick_random_track(library_dir, rng)
+/// The current local profile's name, used to decide which private tracks
+/// are visible. Falls back to a fixed name if onboarding hasn't run yet
+/// (shouldn't normally happen — the frontend prompts for a profile name on
+/// first launch — but exercise commands shouldn't hard-fail over it).
+pub fn current_owner(db: &Store) -> String {
+    db.get_profile_username().ok().flatten().unwrap_or_else(|| "local".to_string())
+}
+
+/// Pick a random active, accessible track from the DB-backed library and
+/// decode one CLIP_DURATION_SECS window from a random position in it.
+pub fn load_random_clip(library_dir: &Path, db: &Store, rng: &mut impl Rng) -> Result<AudioBuffer, String> {
+    let owner = current_owner(db);
+    let track = db
+        .pick_random_active_track(&owner, rng)
+        .map_err(|e| e.to_string())?
         .ok_or_else(|| "Keine Audiodateien in der Bibliothek gefunden.".to_string())?;
+    let track_path = library_dir.join(&track.filename);
     let duration = decode::probe_duration_secs(&track_path).map_err(|e| e.to_string())?;
     let start = pick_start_time(duration, rng);
     decode::decode_clip(&track_path, start, CLIP_DURATION_SECS).map_err(|e| e.to_string())
