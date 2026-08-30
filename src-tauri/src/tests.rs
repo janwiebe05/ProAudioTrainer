@@ -242,6 +242,52 @@ mod transient_tests {
     }
 }
 
+mod eq_match_tests {
+    use super::test_library;
+    use crate::commands::eq_match::{eq_match_evaluate_impl, eq_match_random_impl};
+    use paw_core::exercise::eq_match::{EqMatchExercise, UserBand};
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Mutex;
+
+    #[test]
+    fn eq_match_random_then_evaluate_round_trip() {
+        let (lib_dir, db) = test_library();
+        let exercises: Mutex<HashMap<String, EqMatchExercise>> = Mutex::new(HashMap::new());
+
+        // Unlike every other trainer, this returns the track's own
+        // (unmodified) path directly — no rendering, no cache_dir needed.
+        let response = eq_match_random_impl(2, &lib_dir, &db, &exercises)
+            .expect("eq_match_random_impl should succeed");
+        assert!(std::path::PathBuf::from(&response.dry_path).exists());
+        assert_eq!(response.hidden_bands.len(), 4);
+        assert_eq!(exercises.lock().unwrap().len(), 1);
+
+        let json = serde_json::to_value(&response).unwrap();
+        let obj = json.as_object().unwrap();
+        for key in ["exerciseId", "dryPath", "level", "hiddenBands", "timeLimit", "userControlsFreq", "userControlsQ"] {
+            assert!(obj.contains_key(key), "missing expected camelCase key {key:?}");
+        }
+        // Legacy JS shape: hiddenBands is keyed "1".."4", not a 0-indexed array.
+        let hidden = obj.get("hiddenBands").unwrap().as_object().unwrap();
+        for id in ["1", "2", "3", "4"] {
+            assert!(hidden.contains_key(id), "hiddenBands missing key {id:?}");
+        }
+
+        // A guess matching every hidden band exactly should score high.
+        let mut guesses = BTreeMap::new();
+        for (id, band) in &{
+            let map = exercises.lock().unwrap();
+            map.values().next().unwrap().hidden_bands.clone()
+        } {
+            guesses.insert(*id, UserBand { gain: Some(-band.gain), frequency: Some(band.frequency), q: band.q });
+        }
+        let result = eq_match_evaluate_impl(&response.exercise_id, &guesses, 0.0, &exercises)
+            .expect("evaluate should succeed for a just-created exercise");
+        assert!(result.score >= 900, "near-perfect counter-EQ should score high, got {}", result.score);
+        assert_eq!(exercises.lock().unwrap().len(), 0, "exercise should be one-shot");
+    }
+}
+
 /// Guards against the exact bug found during development: a core Result
 /// struct without #[serde(rename_all = "camelCase")] silently serializes as
 /// snake_case, which the frontend (written expecting camelCase, matching

@@ -57,6 +57,7 @@ pub fn run() {
                 stereo_exercises: Mutex::new(HashMap::new()),
                 transient_exercises: Mutex::new(HashMap::new()),
                 reverb_exercises: Mutex::new(HashMap::new()),
+                eq_match_exercises: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
@@ -73,6 +74,8 @@ pub fn run() {
             commands::transient::transient_evaluate,
             commands::reverb::reverb_random,
             commands::reverb::reverb_evaluate,
+            commands::eq_match::eq_match_random,
+            commands::eq_match::eq_match_evaluate,
             library::library_list,
             library::library_upload,
             library::library_import_shared_folder,

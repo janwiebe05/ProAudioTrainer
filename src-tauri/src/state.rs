@@ -3,7 +3,7 @@
 //! SQLite-backed Store) and decode a clip from it.
 
 use paw_core::exercise::common::CLIP_DURATION_SECS;
-use paw_core::exercise::{dynamics, eq, panning, reverb, stereo, transient};
+use paw_core::exercise::{dynamics, eq, eq_match, panning, reverb, stereo, transient};
 use paw_core::store::Store;
 use paw_core::{decode, AudioBuffer};
 use rand::Rng;
@@ -26,6 +26,7 @@ pub struct AppState {
     pub stereo_exercises: Mutex<HashMap<String, stereo::StereoExercise>>,
     pub transient_exercises: Mutex<HashMap<String, transient::TransientExercise>>,
     pub reverb_exercises: Mutex<HashMap<String, reverb::ReverbExercise>>,
+    pub eq_match_exercises: Mutex<HashMap<String, eq_match::EqMatchExercise>>,
 }
 
 /// Lightweight seconds-since-epoch timestamp — good enough for display/

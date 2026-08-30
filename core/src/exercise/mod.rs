@@ -7,6 +7,7 @@
 pub mod common;
 pub mod dynamics;
 pub mod eq;
+pub mod eq_match;
 pub mod panning;
 pub mod reverb;
 pub mod stereo;
