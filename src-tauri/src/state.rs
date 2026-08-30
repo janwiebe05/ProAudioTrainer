@@ -50,11 +50,6 @@ pub fn take_exercise<T>(
         .ok_or_else(|| "Übung nicht gefunden oder abgelaufen".to_string())
 }
 
-pub fn pick_start_time(duration_secs: f64, rng: &mut impl Rng) -> f64 {
-    let range = (duration_secs - CLIP_DURATION_SECS).max(0.0);
-    rng.gen::<f64>() * range
-}
-
 /// The current local profile's name, used to decide which private tracks
 /// are visible. Falls back to a fixed name if onboarding hasn't run yet
 /// (shouldn't normally happen — the frontend prompts for a profile name on
@@ -64,7 +59,9 @@ pub fn current_owner(db: &Store) -> String {
 }
 
 /// Pick a random active, accessible track from the DB-backed library and
-/// decode one CLIP_DURATION_SECS window from a random position in it.
+/// decode one CLIP_DURATION_SECS window from a random position in it — a
+/// single open+probe pass (decode::decode_random_window), not the old
+/// separate probe_duration_secs()+decode_clip() two-call, two-open dance.
 pub fn load_random_clip(library_dir: &Path, db: &Store, rng: &mut impl Rng) -> Result<AudioBuffer, String> {
     let owner = current_owner(db);
     let track = db
@@ -72,25 +69,34 @@ pub fn load_random_clip(library_dir: &Path, db: &Store, rng: &mut impl Rng) -> R
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Keine Audiodateien in der Bibliothek gefunden.".to_string())?;
     let track_path = library_dir.join(&track.filename);
-    let duration = decode::probe_duration_secs(&track_path).map_err(|e| e.to_string())?;
-    let start = pick_start_time(duration, rng);
-    decode::decode_clip(&track_path, start, CLIP_DURATION_SECS).map_err(|e| e.to_string())
+    decode::decode_random_window(&track_path, CLIP_DURATION_SECS, rng).map_err(|e| e.to_string())
 }
 
 /// Write dry+wet buffers to the cache dir as WAV, return their paths.
+/// Encodes+writes both concurrently — they're fully independent, and this
+/// runs on every single exercise round.
 pub fn write_dry_wet(
     cache_dir: &Path,
     dry: &AudioBuffer,
     wet: &AudioBuffer,
 ) -> Result<(String, String), String> {
     use paw_core::encode::encode_wav_i16;
-    let dry_bytes = encode_wav_i16(dry).map_err(|e| e.to_string())?;
-    let wet_bytes = encode_wav_i16(wet).map_err(|e| e.to_string())?;
 
     std::fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
     let dry_path = cache_dir.join(format!("{}-dry.wav", uuid::Uuid::new_v4()));
     let wet_path = cache_dir.join(format!("{}-wet.wav", uuid::Uuid::new_v4()));
-    std::fs::write(&dry_path, dry_bytes).map_err(|e| e.to_string())?;
-    std::fs::write(&wet_path, wet_bytes).map_err(|e| e.to_string())?;
-    Ok((dry_path.to_string_lossy().to_string(), wet_path.to_string_lossy().to_string()))
+
+    let write_one = |buf: &AudioBuffer, path: &Path| -> Result<(), String> {
+        let bytes = encode_wav_i16(buf).map_err(|e| e.to_string())?;
+        std::fs::write(path, bytes).map_err(|e| e.to_string())
+    };
+
+    std::thread::scope(|s| {
+        let dry_handle = s.spawn(|| write_one(dry, &dry_path));
+        let wet_result = write_one(wet, &wet_path);
+        let dry_result = dry_handle.join().unwrap_or_else(|_| Err("dry-encode thread panicked".to_string()));
+        dry_result?;
+        wet_result?;
+        Ok((dry_path.to_string_lossy().to_string(), wet_path.to_string_lossy().to_string()))
+    })
 }

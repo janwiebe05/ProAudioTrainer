@@ -4,19 +4,38 @@
 //! silently fell back to a hardcoded 30s for every track; (2) the reverb
 //! filter `aconvolve` does not exist in FFmpeg at all. Both concerns are
 //! replaced here by pure-Rust decoding + our own DSP (see dsp::reverb).
+//!
+//! Every public entry point here opens the file exactly once — earlier
+//! versions had callers separately call `probe_duration_secs` then
+//! `decode_clip`, each doing its own `File::open` + format probe on the
+//! same file.
 
 use crate::buffer::AudioBuffer;
 use crate::error::{CoreError, Result};
+use rand::Rng;
 use std::fs::File;
 use std::path::Path;
 use symphonia::core::audio::{AudioBufferRef, Signal};
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::{CodecParameters, DecoderOptions};
+use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-fn open_probed(path: &Path) -> Result<(Box<dyn symphonia::core::formats::FormatReader>, u32, usize)> {
+/// An opened, probed file: format reader plus everything decode_clip-style
+/// functions need, gathered in one probe pass.
+struct OpenedTrack {
+    format: Box<dyn FormatReader>,
+    track_id: u32,
+    codec_params: CodecParameters,
+    sample_rate: u32,
+    channels: usize,
+    /// Container-reported duration, when available without a full decode
+    /// (the common case for WAV/MP3/FLAC/OGG headers with a frame count).
+    known_duration_secs: Option<f64>,
+}
+
+fn open_and_probe(path: &Path) -> Result<OpenedTrack> {
     let file = File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -43,99 +62,69 @@ fn open_probed(path: &Path) -> Result<(Box<dyn symphonia::core::formats::FormatR
     if sample_rate == 0 {
         return Err(CoreError::UnsupportedFormat("sample rate is zero".into()));
     }
-    let channels = track
-        .codec_params
-        .channels
-        .map(|c| c.count())
-        .unwrap_or(2);
+    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+    let track_id = track.id;
+    let codec_params = track.codec_params.clone();
 
-    Ok((format, sample_rate, channels))
+    let known_duration_secs = match (codec_params.n_frames, codec_params.sample_rate) {
+        (Some(n_frames), Some(sr)) if sr > 0 => Some(n_frames as f64 / sr as f64),
+        _ => None,
+    };
+
+    Ok(OpenedTrack { format, track_id, codec_params, sample_rate, channels, known_duration_secs })
+}
+
+/// Duration in seconds, decoding packet timestamps to find the end only if
+/// the container didn't report a frame count up front.
+fn resolve_duration(opened: &mut OpenedTrack) -> Result<f64> {
+    if let Some(d) = opened.known_duration_secs {
+        return Ok(d);
+    }
+    // Rare fallback path: some containers/raw streams don't carry an
+    // up-front frame count. Has to actually decode every packet to find
+    // the last timestamp — inherently a full scan, no way around it.
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&opened.codec_params, &DecoderOptions::default())
+        .map_err(|e| CoreError::Decode(e.to_string()))?;
+    let mut last_ts = 0u64;
+    while let Ok(packet) = opened.format.next_packet() {
+        if packet.track_id() != opened.track_id {
+            continue;
+        }
+        last_ts = packet.ts();
+        let _ = decoder.decode(&packet);
+    }
+    Ok(last_ts as f64 / opened.sample_rate as f64)
 }
 
 /// Full-file duration in seconds. Replaces the old ffprobe round-trip.
 pub fn probe_duration_secs(path: &Path) -> Result<f64> {
-    let (mut format, sample_rate, _channels) = open_probed(path)?;
-    let track_id = format
-        .default_track()
-        .ok_or_else(|| CoreError::UnsupportedFormat("no default track".into()))?
-        .id;
-
-    // Prefer the container-reported duration (fast path, no full decode).
-    if let Some(track) = format.tracks().iter().find(|t| t.id == track_id) {
-        if let (Some(n_frames), Some(sr)) = (track.codec_params.n_frames, track.codec_params.sample_rate) {
-            if sr > 0 {
-                return Ok(n_frames as f64 / sr as f64);
-            }
-        }
-    }
-
-    // Fallback: decode packet timestamps to find the end (slower, rare path
-    // for containers without an up-front frame count, e.g. some raw streams).
-    let codec_params = format
-        .tracks()
-        .iter()
-        .find(|t| t.id == track_id)
-        .unwrap()
-        .codec_params
-        .clone();
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
-        .map_err(|e| CoreError::Decode(e.to_string()))?;
-
-    let mut last_ts = 0u64;
-    loop {
-        match format.next_packet() {
-            Ok(packet) => {
-                if packet.track_id() != track_id {
-                    continue;
-                }
-                last_ts = packet.ts();
-                let _ = decoder.decode(&packet);
-            }
-            Err(_) => break,
-        }
-    }
-    Ok(last_ts as f64 / sample_rate as f64)
+    let mut opened = open_and_probe(path)?;
+    resolve_duration(&mut opened)
 }
 
-/// Decode an entire file (used for short assets like impulse responses,
-/// where windowing isn''t needed).
-pub fn decode_full(path: &Path) -> Result<AudioBuffer> {
-    let duration = probe_duration_secs(path)?;
-    decode_clip(path, 0.0, duration + 1.0) // +1s slack in case duration estimate is short
-}
-
-/// Decode a time-windowed clip `[start_secs, start_secs + duration_secs)` from
-/// `path` into a planar AudioBuffer. If the file is shorter than requested,
-/// the returned buffer is simply shorter (never panics/errors on that).
-pub fn decode_clip(path: &Path, start_secs: f64, duration_secs: f64) -> Result<AudioBuffer> {
-    let (mut format, sample_rate, channels) = open_probed(path)?;
-    let track = format
-        .default_track()
-        .ok_or_else(|| CoreError::UnsupportedFormat("no default track".into()))?;
-    let track_id = track.id;
-    let codec_params = track.codec_params.clone();
-
+/// Decode every packet of `opened` into a planar AudioBuffer, keeping only
+/// frames within `[start_frame, end_frame)`. `end_frame` may be
+/// `i64::MAX` to mean "to EOF".
+fn decode_window(mut opened: OpenedTrack, start_frame: i64, end_frame: i64) -> Result<AudioBuffer> {
     let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
+        .make(&opened.codec_params, &DecoderOptions::default())
         .map_err(|e| CoreError::Decode(e.to_string()))?;
 
-    let start_frame = (start_secs.max(0.0) * sample_rate as f64).round() as i64;
-    let end_frame = start_frame + (duration_secs.max(0.0) * sample_rate as f64).round() as i64;
-
-    let mut out = AudioBuffer::new(sample_rate, channels, 0);
-    for c in out.channels.iter_mut() {
-        c.reserve((end_frame - start_frame).max(0) as usize);
+    let mut out = AudioBuffer::new(opened.sample_rate, opened.channels, 0);
+    if end_frame != i64::MAX {
+        for c in out.channels.iter_mut() {
+            c.reserve((end_frame - start_frame).max(0) as usize);
+        }
     }
 
     let mut frame_cursor: i64 = 0;
-
     loop {
-        let packet = match format.next_packet() {
+        let packet = match opened.format.next_packet() {
             Ok(p) => p,
             Err(_) => break, // EOF or unrecoverable — stop, return what we have
         };
-        if packet.track_id() != track_id {
+        if packet.track_id() != opened.track_id {
             continue;
         }
         let decoded = match decoder.decode(&packet) {
@@ -156,12 +145,46 @@ pub fn decode_clip(path: &Path, start_secs: f64, duration_secs: f64) -> Result<A
         }
 
         let local_start = (start_frame - packet_start).max(0) as usize;
-        let local_end = (end_frame - packet_start).min(n_frames_in_packet) as usize;
+        let local_end = (end_frame - packet_start).clamp(0, n_frames_in_packet) as usize;
 
         append_ref_range(&decoded, out.channels.len(), local_start, local_end, &mut out.channels);
     }
 
     Ok(out)
+}
+
+/// Decode an entire file in one open — no pass to probe duration first
+/// (used for short assets like impulse responses, where windowing isn't
+/// needed and the container's frame count doesn't even need to be read).
+pub fn decode_full(path: &Path) -> Result<AudioBuffer> {
+    let opened = open_and_probe(path)?;
+    decode_window(opened, 0, i64::MAX)
+}
+
+/// Decode a time-windowed clip `[start_secs, start_secs + duration_secs)` from
+/// `path` into a planar AudioBuffer, in one open+probe pass. If the file is
+/// shorter than requested, the returned buffer is simply shorter (never
+/// panics/errors on that).
+pub fn decode_clip(path: &Path, start_secs: f64, duration_secs: f64) -> Result<AudioBuffer> {
+    let opened = open_and_probe(path)?;
+    let sample_rate = opened.sample_rate;
+    let start_frame = (start_secs.max(0.0) * sample_rate as f64).round() as i64;
+    let end_frame = start_frame + (duration_secs.max(0.0) * sample_rate as f64).round() as i64;
+    decode_window(opened, start_frame, end_frame)
+}
+
+/// Pick a random `window_secs`-long clip from `path` and decode it — the
+/// single-open replacement for the old "probe_duration_secs then
+/// decode_clip" two-call, two-open pattern every *_random command used.
+pub fn decode_random_window(path: &Path, window_secs: f64, rng: &mut impl Rng) -> Result<AudioBuffer> {
+    let mut opened = open_and_probe(path)?;
+    let duration_secs = resolve_duration(&mut opened)?;
+    let sample_rate = opened.sample_rate;
+
+    let start_secs = rng.gen::<f64>() * (duration_secs - window_secs).max(0.0);
+    let start_frame = (start_secs * sample_rate as f64).round() as i64;
+    let end_frame = start_frame + (window_secs.max(0.0) * sample_rate as f64).round() as i64;
+    decode_window(opened, start_frame, end_frame)
 }
 
 /// Copy samples[local_start..local_end] from every plane of `decoded` into
@@ -174,19 +197,6 @@ fn append_ref_range(
     local_end: usize,
     dst: &mut [Vec<f32>],
 ) {
-    macro_rules! copy_planes {
-        ($buf:expr) => {{
-            let spec_channels = $buf.spec().channels.count();
-            for ch in 0..dst_channels {
-                let src_ch = ch.min(spec_channels.saturating_sub(1));
-                let plane = $buf.chan(src_ch);
-                for i in local_start..local_end.min(plane.len()) {
-                    dst[ch].push(plane[i] as f32);
-                }
-            }
-        }};
-    }
-
     match decoded {
         AudioBufferRef::U8(b) => copy_planes_convert(b, dst_channels, local_start, local_end, dst, |s| {
             (s as f32 - 128.0) / 128.0
@@ -212,7 +222,9 @@ fn append_ref_range(
         AudioBufferRef::S32(b) => copy_planes_convert(b, dst_channels, local_start, local_end, dst, |s| {
             s as f64 as f32 / 2_147_483_648.0
         }),
-        AudioBufferRef::F32(b) => copy_planes!(b),
+        // F32 is the identity conversion — reuse the same generic path
+        // instead of a separate hand-rolled loop that used to duplicate it.
+        AudioBufferRef::F32(b) => copy_planes_convert(b, dst_channels, local_start, local_end, dst, |s| s),
         AudioBufferRef::F64(b) => copy_planes_convert(b, dst_channels, local_start, local_end, dst, |s| {
             s as f32
         }),
