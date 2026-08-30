@@ -61,7 +61,8 @@ pub fn dynamics_random_impl(
     let mut rng = rand::thread_rng();
     let dry = load_random_clip(library_dir, db, &mut rng)?;
 
-    let exercise = dynamics::generate(level, &mut rng);
+    let mut exercise = dynamics::generate(level, &mut rng);
+    exercise.params = dynamics::adapt_params_to_signal(&dry, &exercise.params, exercise.effect);
     let wet = dynamics::render(&dry, &exercise);
     let (dry_path, processed_path) = write_dry_wet(cache_dir, &dry, &wet)?;
 

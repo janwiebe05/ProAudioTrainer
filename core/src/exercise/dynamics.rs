@@ -144,6 +144,62 @@ pub fn generate(level: u8, rng: &mut impl Rng) -> DynamicsExercise {
     DynamicsExercise { effect, params, amount_index, guess_mode, level }
 }
 
+/// Anchor threshold (and, for compressor/limiter, zero out makeup gain) to
+/// the clip's actual measured RMS/peak level, so the rendered effect is
+/// reliably audible/well-calibrated regardless of how loud or quiet the
+/// randomly-picked library track happens to be — a static preset threshold
+/// alone can sit entirely above or below a given clip's level. Ported from
+/// the legacy client-side `adaptParamsToSignal` (which ran after the
+/// server already picked base params but before rendering); unlike the
+/// legacy split, this now runs before rendering and the *adapted* params
+/// become the exercise's ground truth for scoring too — there's no reason
+/// to score a level-3 guess against a threshold value quieter/louder than
+/// what was actually rendered, now that both steps happen in one place.
+pub fn adapt_params_to_signal(dry: &AudioBuffer, params: &DynamicsParams, effect: EffectType) -> DynamicsParams {
+    let mono = dry.to_mono();
+    let max_samples = mono.len().min(dry.sample_rate as usize * 3);
+    let mut sum_sq = 0.0f32;
+    let mut peak = 0.0f32;
+    for &s in &mono[..max_samples] {
+        let a = s.abs();
+        sum_sq += a * a;
+        if a > peak {
+            peak = a;
+        }
+    }
+    let rms_db = if sum_sq > 0.0 {
+        20.0 * (sum_sq / max_samples as f32).sqrt().log10()
+    } else {
+        -80.0
+    };
+    let peak_db = if peak > 0.0 { 20.0 * peak.log10() } else { -80.0 };
+    let crest_db = peak_db - rms_db;
+
+    let mut p = *params;
+    match effect {
+        EffectType::Compressor | EffectType::Limiter => {
+            // Threshold anchored between RMS and Peak — the compressor
+            // should catch transients above the average level.
+            let preset_mid = if effect == EffectType::Limiter { -6.0 } else { -24.0 };
+            let offset = p.threshold_db - preset_mid;
+            let anchor = rms_db + crest_db * 0.5;
+            p.threshold_db = (anchor + offset).clamp(-60.0, -1.0);
+            // No makeup — students should hear the raw gain reduction, as
+            // in a real calibration session, not a level-matched trick.
+            p.makeup_db = 0.0;
+        }
+        EffectType::Gate | EffectType::Expander => {
+            // Threshold must sit clearly below the signal's average level
+            // so only the quietest passages (tails, gaps) get attenuated.
+            let preset_mid = -35.0;
+            let offset = p.threshold_db - preset_mid;
+            let anchor = rms_db - 12.0;
+            p.threshold_db = (anchor + offset).clamp(-70.0, -15.0);
+        }
+    }
+    p
+}
+
 pub fn render(dry: &AudioBuffer, exercise: &DynamicsExercise) -> AudioBuffer {
     let mut wet = dry.clone();
     match exercise.effect {
@@ -227,6 +283,48 @@ pub fn evaluate(exercise: &DynamicsExercise, guess: &DynamicsGuess, seconds_take
 mod tests {
     use super::*;
     use rand::SeedableRng;
+
+    fn tone_buffer(sample_rate: u32, seconds: f32, amp: f32) -> AudioBuffer {
+        let n = (sample_rate as f32 * seconds) as usize;
+        let mut b = AudioBuffer::new(sample_rate, 2, n);
+        for ch in b.channels.iter_mut() {
+            for (i, s) in ch.iter_mut().enumerate() {
+                *s = amp * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sample_rate as f32).sin();
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn adapts_compressor_threshold_below_a_quiet_clips_level() {
+        // A static preset threshold (e.g. -24dB, this level's typical
+        // midpoint) sits entirely above a very quiet clip's peak — the
+        // adapted threshold must come out low enough to actually engage.
+        let quiet = tone_buffer(48000, 2.0, 0.02); // roughly -34 dBFS peak
+        let base = DynamicsParams { threshold_db: -24.0, ratio: 4.0, attack_s: 0.01, release_s: 0.1, makeup_db: 8.0 };
+        let adapted = adapt_params_to_signal(&quiet, &base, EffectType::Compressor);
+        assert!(adapted.threshold_db < -24.0, "expected a lower threshold for a quiet clip, got {}", adapted.threshold_db);
+        assert_eq!(adapted.makeup_db, 0.0);
+    }
+
+    #[test]
+    fn adapts_gate_threshold_below_a_loud_clips_level() {
+        let loud = tone_buffer(48000, 2.0, 0.9); // near full-scale
+        let base = DynamicsParams { threshold_db: -35.0, ratio: 10.0, attack_s: 0.003, release_s: 0.1, makeup_db: 0.0 };
+        let adapted = adapt_params_to_signal(&loud, &base, EffectType::Gate);
+        assert!(adapted.threshold_db > -35.0, "expected a higher (but still clearly below signal) threshold for a loud clip, got {}", adapted.threshold_db);
+        assert!(adapted.threshold_db <= -15.0, "gate threshold must stay within its clamp range");
+    }
+
+    #[test]
+    fn adaptation_never_produces_nan_on_silence() {
+        let silence = AudioBuffer::new(48000, 2, 48000);
+        let base = DynamicsParams { threshold_db: -24.0, ratio: 4.0, attack_s: 0.01, release_s: 0.1, makeup_db: 6.0 };
+        for effect in [EffectType::Compressor, EffectType::Limiter, EffectType::Gate, EffectType::Expander] {
+            let adapted = adapt_params_to_signal(&silence, &base, effect);
+            assert!(adapted.threshold_db.is_finite());
+        }
+    }
 
     #[test]
     fn missing_amount_guess_at_index_0_scores_zero_not_partial_credit() {
