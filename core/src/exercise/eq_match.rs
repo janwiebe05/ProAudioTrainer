@@ -185,6 +185,12 @@ pub struct EqMatchResult {
     pub time_factor: f32,
     pub seconds_taken: f32,
     pub band_results: BTreeMap<u8, BandResult>,
+    /// The exercise's hidden target curve, echoed back so the frontend's
+    /// reveal screen (eq-match-trainer.js `_showResults()`) can show what
+    /// the student was actually matching against — it reads this straight
+    /// off the evaluate response rather than keeping its own copy from the
+    /// `*_random` call.
+    pub hidden_bands: BTreeMap<u8, HiddenBand>,
 }
 
 pub fn evaluate(exercise: &EqMatchExercise, user_bands: &BTreeMap<u8, UserBand>, seconds_taken: f32) -> EqMatchResult {
@@ -274,7 +280,7 @@ pub fn evaluate(exercise: &EqMatchExercise, user_bands: &BTreeMap<u8, UserBand>,
     let avg_score = if band_count > 0 { total_score / band_count as f32 } else { 0.0 };
     let final_score = (avg_score * 1000.0 * time_factor).round() as u32;
 
-    EqMatchResult { score: final_score, time_factor, seconds_taken, band_results }
+    EqMatchResult { score: final_score, time_factor, seconds_taken, band_results, hidden_bands: exercise.hidden_bands.clone() }
 }
 
 #[cfg(test)]
@@ -329,6 +335,24 @@ mod tests {
         // With every band definitely active and gains randomly 2-5dB, a
         // flat response should score noticeably below a perfect guess.
         assert!(result.score < 700, "leaving every band flat should score low, got {}", result.score);
+    }
+
+    #[test]
+    fn evaluate_result_echoes_back_the_hidden_bands() {
+        // Regression: EqMatchResult used to omit hidden_bands entirely, so
+        // the frontend's `_showResults()` (which destructures it from the
+        // evaluate response, not the earlier random response) crashed with
+        // a TypeError on every single round submission.
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(6);
+        let ex = generate(2, &mut rng);
+        let result = evaluate(&ex, &BTreeMap::new(), 0.0);
+        assert_eq!(result.hidden_bands.len(), ex.hidden_bands.len());
+        for (id, band) in &ex.hidden_bands {
+            let echoed = &result.hidden_bands[id];
+            assert_eq!(echoed.frequency, band.frequency);
+            assert_eq!(echoed.gain, band.gain);
+            assert_eq!(echoed.active, band.active);
+        }
     }
 
     #[test]

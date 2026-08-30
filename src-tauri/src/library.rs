@@ -97,12 +97,34 @@ fn import_one_file(library_dir: &Path, db: &paw_core::store::Store, src: &Path, 
 /// ALLOWED_EXTENSIONS (case-insensitive) — used for shared-folder import,
 /// where a teacher's prepared pack may have subfolders per category (the
 /// bundled EchoThief content is organized the same way).
+///
+/// `path.is_dir()` follows symlinks, so a folder containing a symlink back
+/// at an ancestor directory (or at `/`) would otherwise recurse forever and
+/// stack-overflow the whole backend process. Guard against that with a
+/// canonicalized visited-set (dedups symlink cycles) and a hard depth cap
+/// (handles any cycle canonicalize can't see, e.g. a race, and just bounds
+/// worst-case work on a legitimately huge tree).
 fn scan_audio_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut visited = std::collections::HashSet::new();
+    scan_audio_files_inner(dir, out, &mut visited, 0);
+}
+
+const MAX_SCAN_DEPTH: u32 = 64;
+
+fn scan_audio_files_inner(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut std::collections::HashSet<PathBuf>, depth: u32) {
+    if depth > MAX_SCAN_DEPTH {
+        return;
+    }
+    if let Ok(canonical) = dir.canonicalize() {
+        if !visited.insert(canonical) {
+            return; // already scanned this real directory — symlink cycle
+        }
+    }
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            scan_audio_files(&path, out);
+            scan_audio_files_inner(&path, out, visited, depth + 1);
         } else if path
             .extension()
             .and_then(|e| e.to_str())
@@ -159,8 +181,21 @@ pub fn library_import_shared_folder(folder_path: String, state: tauri::State<App
     Ok(imported as u32)
 }
 
+/// Same ownership rule as `library_delete`: a private track can only be
+/// toggled by its own profile, otherwise any profile could silently
+/// activate/deactivate another profile's private track by id even though
+/// it never shows up in that profile's `library_list`.
 #[tauri::command]
 pub fn library_toggle_active(id: String, active: bool, state: tauri::State<AppState>) -> Result<(), String> {
+    let owner = current_profile_id(&state.db)?;
+    let Some(track) = state.db.get_track(&id).map_err(|e| e.to_string())? else {
+        return Ok(()); // already gone — no-op, not an error
+    };
+    if let Some(track_owner) = &track.owner {
+        if track_owner != &owner {
+            return Err("Diese Datei gehört einem anderen Profil.".to_string());
+        }
+    }
     state.db.set_active(&id, active).map_err(|e| e.to_string())
 }
 

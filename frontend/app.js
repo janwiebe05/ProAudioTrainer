@@ -152,15 +152,28 @@ class App {
   // release actually exists there. Offers to download+install+restart via
   // a toast rather than blocking startup on a network call.
   async checkForUpdates() {
+    // The check itself failing (offline, GitHub unreachable, etc.) is
+    // expected/harmless and stays silent — but once we've told the user an
+    // update is downloading, a failure in downloadAndInstall() needs to
+    // actually surface, or a broken update silently leaves them stuck on
+    // the old version with no indication anything went wrong.
+    let update;
     try {
-      const update = await window.__TAURI__.updater.check();
-      if (!update?.available) return;
-      showToast(`Update ${update.version} verfügbar — lädt im Hintergrund…`, 'info', 4000);
+      update = await window.__TAURI__.updater.check();
+    } catch (err) {
+      console.warn('Update check failed (non-fatal):', err);
+      return;
+    }
+    if (!update?.available) return;
+
+    showToast(`Update ${update.version} verfügbar — lädt im Hintergrund…`, 'info', 4000);
+    try {
       await update.downloadAndInstall();
       showToast('Update installiert. Starte neu…', 'success', 3000);
       setTimeout(() => window.__TAURI__.process.relaunch(), 1500);
     } catch (err) {
-      console.warn('Update check failed (non-fatal):', err);
+      console.error('Update install failed:', err);
+      showToast('Update konnte nicht installiert werden.', 'error', 5000);
     }
   }
 

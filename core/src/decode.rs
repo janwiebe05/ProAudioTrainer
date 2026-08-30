@@ -240,8 +240,15 @@ fn copy_planes_convert<S: symphonia::core::sample::Sample + Copy>(
     convert: impl Fn(S) -> f32,
 ) {
     let spec_channels = buf.spec().channels.count();
+    if spec_channels == 0 {
+        // A malformed/truncated packet can report zero decoded channel
+        // planes even though the container-level probe promised >=1 —
+        // `buf.chan(0)` would otherwise panic (internal assert), taking
+        // down the whole backend process. Nothing to copy in that case.
+        return;
+    }
     for ch in 0..dst_channels {
-        let src_ch = ch.min(spec_channels.saturating_sub(1));
+        let src_ch = ch.min(spec_channels - 1);
         let plane = buf.chan(src_ch);
         for i in local_start..local_end.min(plane.len()) {
             dst[ch].push(convert(plane[i]));

@@ -238,13 +238,19 @@ pub fn evaluate(exercise: &DynamicsExercise, guess: &DynamicsGuess, seconds_take
             // Option, not a usize::MAX sentinel: casting MAX down to i32
             // wraps around to -1, which used to make a missing guess score
             // as a false "neighbor" hit against amount_index 0.
-            let amount_idx = exercise.amount_index.unwrap_or(0) as i32;
+            let amount_idx = exercise.amount_index.unwrap_or(0);
             let amount_score = match guess.amount {
-                Some(guess_amount) => {
-                    let diff = (amount_idx - guess_amount as i32).abs();
+                // AMOUNT_LABELS has exactly 4 entries (indices 0..=3) — a
+                // guess outside that range can't come from the normal UI,
+                // but a stray/out-of-range value from `invoke()` shouldn't
+                // silently overflow the abs-diff into a huge i32 that
+                // happens to still read as "not a neighbor" (0 pts); reject
+                // it explicitly instead of relying on that coincidence.
+                Some(guess_amount) if guess_amount < AMOUNT_LABELS.len() => {
+                    let diff = (amount_idx as i32 - guess_amount as i32).abs();
                     if diff == 0 { 600.0 } else if diff == 1 { 300.0 } else { 0.0 }
                 }
-                None => 0.0,
+                _ => 0.0,
             };
             (((if type_correct { 400.0 } else { 0.0 }) + amount_score) * time_factor).round() as u32
         }

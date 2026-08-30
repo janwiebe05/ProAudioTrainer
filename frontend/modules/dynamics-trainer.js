@@ -140,7 +140,7 @@ class DynamicsTrainer {
           <div class="dyn-panel-label">PARAMETER EINSCHÄTZEN</div>
           <div class="dyn-param-row">
             <label class="dyn-param-label">THRESHOLD</label>
-            <input type="range" class="dyn-slider" id="dyn-threshold" min="-60" max="0" step="1" value="-24">
+            <input type="range" class="dyn-slider" id="dyn-threshold" min="-70" max="0" step="1" value="-24">
             <span class="dyn-param-value" id="dyn-threshold-val">-24 dB</span>
           </div>
           <div class="dyn-param-row" id="dyn-row-ratio">

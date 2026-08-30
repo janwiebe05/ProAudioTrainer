@@ -45,6 +45,18 @@ pub fn run() {
             let content_dir = resolve_content_dir(app.handle());
             std::fs::create_dir_all(&library_dir)?;
             std::fs::create_dir_all(&cache_dir)?;
+            // Rendered dry/wet exercise WAVs (render_random_exercise) are
+            // never cleaned up individually — each round leaves its pair
+            // behind once submitted or abandoned. The in-memory exercise
+            // stores below always start empty on launch, so nothing in the
+            // cache dir can still be referenced by a live round; sweep it
+            // clean here rather than letting it grow unbounded across
+            // sessions.
+            if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+                for entry in entries.flatten() {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
 
             let db = Store::open(&data_dir.join("data.db"))?;
 

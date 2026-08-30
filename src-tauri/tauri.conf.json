@@ -21,7 +21,8 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "**"
+          "$APPLOCALDATA/library/**",
+          "$APPCACHE/exercises/**"
         ]
       },
       "csp": null

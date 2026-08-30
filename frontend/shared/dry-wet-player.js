@@ -64,9 +64,14 @@ class DryWetPlayer {
     this.wetBuffer = wetBuf;
   }
 
-  play() {
+  async play() {
     if (!this.dryBuffer || !this.wetBuffer) return;
     if (this.isPlaying) this.stop();
+    // The AudioContext can still be 'suspended' here (autoplay policy, or
+    // simply never resumed after page load) — every pre-migration trainer
+    // resumed it before starting playback, and losing that check meant
+    // "play" silently did nothing the first time a user pressed it.
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
     this.drySource = this.ctx.createBufferSource();
     this.drySource.buffer = this.dryBuffer;
     this.drySource.loop = true;

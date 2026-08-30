@@ -207,7 +207,7 @@ impl Store {
     // ─── Profiles ────────────────────────────────────────────────────────────
 
     pub fn list_profiles(&self) -> Result<Vec<Profile>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT id, username, created_at FROM profiles ORDER BY created_at ASC")
             .map_err(map_err)?;
@@ -223,7 +223,7 @@ impl Store {
     /// profile is the one the caller almost always wants to switch into).
     pub fn create_profile(&self, username: &str, created_at: &str) -> Result<Profile> {
         let profile = Profile { id: uuid::Uuid::new_v4().to_string(), username: username.to_string(), created_at: created_at.to_string() };
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO profiles (id, username, created_at) VALUES (?1, ?2, ?3)",
             params![profile.id, profile.username, profile.created_at],
@@ -243,7 +243,7 @@ impl Store {
     /// profile was active, no profile is active afterwards (caller should
     /// prompt to switch/create one).
     pub fn delete_profile(&self, id: &str) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let filenames: Vec<String> = {
             let mut stmt = conn.prepare("SELECT filename FROM tracks WHERE owner = ?1").map_err(map_err)?;
             let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0)).map_err(map_err)?;
@@ -260,7 +260,7 @@ impl Store {
     }
 
     pub fn get_active_profile(&self) -> Result<Option<Profile>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let active_id: Option<String> = conn
             .query_row("SELECT value FROM settings WHERE key = 'active_profile_id'", [], |r| r.get(0))
             .optional()
@@ -277,7 +277,7 @@ impl Store {
     /// stale/unknown id would silently leave the app with no valid active
     /// profile.
     pub fn set_active_profile(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let exists: i64 = conn
             .query_row("SELECT COUNT(*) FROM profiles WHERE id = ?1", params![id], |r| r.get(0))
             .map_err(map_err)?;
@@ -295,7 +295,7 @@ impl Store {
     // ─── Tracks / library ───────────────────────────────────────────────────
 
     pub fn add_track(&self, track: &Track) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO tracks (id, filename, original_name, size, duration, mime_type, active, owner, added_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -310,7 +310,7 @@ impl Store {
     /// Tracks visible to `owner` (a profile id): shared (owner IS NULL)
     /// plus their own private ones.
     pub fn list_accessible(&self, owner: &str) -> Result<Vec<Track>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {TRACK_COLUMNS} FROM tracks WHERE owner IS NULL OR owner = ?1 ORDER BY added_at DESC"
@@ -323,7 +323,7 @@ impl Store {
     }
 
     pub fn get_track(&self, id: &str) -> Result<Option<Track>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             &format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id = ?1"),
             params![id],
@@ -334,14 +334,14 @@ impl Store {
     }
 
     pub fn set_active(&self, id: &str, active: bool) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("UPDATE tracks SET active = ?2 WHERE id = ?1", params![id, active as i64])
             .map_err(map_err)?;
         Ok(())
     }
 
     pub fn delete_track(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM tracks WHERE id = ?1", params![id]).map_err(map_err)?;
         Ok(())
     }
@@ -352,7 +352,7 @@ impl Store {
     /// discarding most of them in Rust.
     pub fn pick_random_active_track(&self, owner: &str, rng: &mut impl Rng) -> Result<Option<Track>> {
         let active: Vec<Track> = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {TRACK_COLUMNS} FROM tracks WHERE (owner IS NULL OR owner = ?1) AND active = 1"
@@ -372,7 +372,7 @@ impl Store {
     // the way its own private library tracks are its own.
 
     pub fn add_score(&self, profile_id: &str, entry: &ScoreEntry) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO scores (id, profile_id, module, score, rounds, level, streak, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -382,7 +382,7 @@ impl Store {
     }
 
     pub fn top_scores(&self, profile_id: &str, module: &str, limit: i64) -> Result<Vec<ScoreEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {SCORE_COLUMNS} FROM scores WHERE profile_id = ?1 AND module = ?2 ORDER BY score DESC LIMIT ?3"
@@ -393,7 +393,7 @@ impl Store {
     }
 
     pub fn progress_overview(&self, profile_id: &str) -> Result<Vec<ModuleProgress>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT module, COUNT(*), MAX(score), SUM(score) FROM scores WHERE profile_id = ?1 GROUP BY module ORDER BY module")
             .map_err(map_err)?;
@@ -413,7 +413,7 @@ impl Store {
     /// All-time aggregate across every module for one profile — feeds the
     /// dashboard's stat cards (legacy /api/progress/summary).
     pub fn summary(&self, profile_id: &str) -> Result<ProgressSummary> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "SELECT COALESCE(SUM(score),0), COALESCE(SUM(rounds),0),
                      COALESCE(CAST(AVG(score) AS INTEGER),0), COALESCE(MAX(streak),0), COUNT(*)
@@ -435,7 +435,7 @@ impl Store {
     /// — feeds the dashboard's session-history table and learning-curve
     /// chart (legacy /api/progress/sessions).
     pub fn recent_scores(&self, profile_id: &str, limit: i64) -> Result<Vec<ScoreEntry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {SCORE_COLUMNS} FROM scores WHERE profile_id = ?1 ORDER BY created_at DESC LIMIT ?2"
