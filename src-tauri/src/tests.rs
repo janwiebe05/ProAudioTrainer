@@ -37,6 +37,7 @@ fn test_library() -> (PathBuf, Store) {
     std::fs::write(dir.join(filename), bytes).expect("synth fixture should write");
 
     let db = Store::open_in_memory().expect("in-memory store should open");
+    db.create_profile("Test Profile", "2026-01-01T00:00:00Z").expect("test profile should be creatable");
     db.add_track(&Track {
         id: "synthetic-track".to_string(),
         filename: filename.to_string(),

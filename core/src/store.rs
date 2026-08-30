@@ -1,14 +1,18 @@
 //! Local SQLite persistence — library metadata (shared/school vs. private
-//! tracks), score history, and the local user profile. Lives in paw-core
-//! (not the Tauri shell) so a future iOS build can reuse the same
-//! schema/logic — SQLite is available on every target platform we care
-//! about (Windows, macOS, iOS).
+//! tracks), score history, and local user profiles. Lives in paw-core (not
+//! the Tauri shell) so a future iOS build can reuse the same schema/logic —
+//! SQLite is available on every target platform we care about (Windows,
+//! macOS, iOS).
 //!
 //! Audio files themselves stay on the filesystem (see the `filename` field,
 //! resolved by the caller against its uploads directory); only metadata
-//! lives here. `owner: None` means school/shared content, `owner:
-//! Some(name)` is a private track belonging to that local profile —
-//! carried over 1:1 from the legacy JSON `ownerId: null | username` model.
+//! lives here. `owner: None` on a track means shared/school content;
+//! `owner: Some(profile_id)` is a private track belonging to that local
+//! profile. Multiple profiles can exist per install (e.g. several people
+//! sharing one family/classroom computer, each with their own private
+//! library and score history) — exactly one is "active" at a time
+//! (`settings.active_profile_id`), and that's whose view the exercise
+//! engine and library commands operate against.
 
 use crate::error::{CoreError, Result};
 use rand::Rng;
@@ -18,6 +22,15 @@ use std::path::Path;
 use std::sync::Mutex;
 
 const SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS profiles (
+        id         TEXT PRIMARY KEY,
+        username   TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS tracks (
         id            TEXT PRIMARY KEY,
         filename      TEXT NOT NULL,
@@ -31,6 +44,7 @@ const SCHEMA: &str = "
     );
     CREATE TABLE IF NOT EXISTS scores (
         id         TEXT PRIMARY KEY,
+        profile_id TEXT,
         module     TEXT NOT NULL,
         score      INTEGER NOT NULL,
         rounds     INTEGER NOT NULL,
@@ -38,15 +52,18 @@ const SCHEMA: &str = "
         streak     INTEGER NOT NULL,
         created_at TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS profile (
-        id         INTEGER PRIMARY KEY CHECK (id = 1),
-        username   TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    );
 ";
 
 pub struct Store {
     conn: Mutex<Connection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Profile {
+    pub id: String,
+    pub username: String,
+    pub created_at: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -112,7 +129,60 @@ fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
     })
 }
 
+fn row_to_score(row: &rusqlite::Row) -> rusqlite::Result<ScoreEntry> {
+    Ok(ScoreEntry {
+        id: row.get(0)?,
+        module: row.get(1)?,
+        score: row.get(2)?,
+        rounds: row.get(3)?,
+        level: row.get(4)?,
+        streak: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
 const TRACK_COLUMNS: &str = "id, filename, original_name, size, duration, mime_type, active, owner, added_at";
+const SCORE_COLUMNS: &str = "id, module, score, rounds, level, streak, created_at";
+
+/// A legacy single-profile install (before multi-profile support) had a
+/// `profile` table (singular) with exactly one row. Move that into the new
+/// `profiles` table with a fresh id, point every track that used to be
+/// owned by the old bare username at that id instead, and make it active.
+/// A no-op on a fresh database or one that's already been migrated.
+fn migrate_legacy_single_profile(conn: &Connection) -> rusqlite::Result<()> {
+    let has_old_table: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='profile'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_old_table == 0 {
+        return Ok(());
+    }
+
+    let already_migrated: i64 = conn.query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0))?;
+    if already_migrated == 0 {
+        let old: Option<(String, String)> = conn
+            .query_row("SELECT username, created_at FROM profile WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?;
+        if let Some((username, created_at)) = old {
+            let new_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO profiles (id, username, created_at) VALUES (?1, ?2, ?3)",
+                params![new_id, username, created_at],
+            )?;
+            conn.execute("UPDATE tracks SET owner = ?1 WHERE owner = ?2", params![new_id, username])?;
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('active_profile_id', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![new_id],
+            )?;
+        }
+    }
+    conn.execute("DROP TABLE profile", [])?;
+    Ok(())
+}
 
 impl Store {
     pub fn open(db_path: &Path) -> Result<Self> {
@@ -121,6 +191,7 @@ impl Store {
         }
         let conn = Connection::open(db_path).map_err(map_err)?;
         conn.execute_batch(SCHEMA).map_err(map_err)?;
+        migrate_legacy_single_profile(&conn).map_err(map_err)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -131,6 +202,94 @@ impl Store {
         let conn = Connection::open_in_memory().map_err(map_err)?;
         conn.execute_batch(SCHEMA).map_err(map_err)?;
         Ok(Self { conn: Mutex::new(conn) })
+    }
+
+    // ─── Profiles ────────────────────────────────────────────────────────────
+
+    pub fn list_profiles(&self) -> Result<Vec<Profile>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, username, created_at FROM profiles ORDER BY created_at ASC")
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(Profile { id: row.get(0)?, username: row.get(1)?, created_at: row.get(2)? })
+            })
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    /// Create a new profile and make it the active one (a freshly created
+    /// profile is the one the caller almost always wants to switch into).
+    pub fn create_profile(&self, username: &str, created_at: &str) -> Result<Profile> {
+        let profile = Profile { id: uuid::Uuid::new_v4().to_string(), username: username.to_string(), created_at: created_at.to_string() };
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO profiles (id, username, created_at) VALUES (?1, ?2, ?3)",
+            params![profile.id, profile.username, profile.created_at],
+        ).map_err(map_err)?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('active_profile_id', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![profile.id],
+        ).map_err(map_err)?;
+        Ok(profile)
+    }
+
+    /// Deletes a profile along with its private tracks and scores (shared
+    /// tracks, i.e. owner IS NULL, are untouched). Returns the filenames of
+    /// any deleted tracks so the caller can remove the underlying files too
+    /// — the Store only owns the DB, not the filesystem. If the deleted
+    /// profile was active, no profile is active afterwards (caller should
+    /// prompt to switch/create one).
+    pub fn delete_profile(&self, id: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let filenames: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT filename FROM tracks WHERE owner = ?1").map_err(map_err)?;
+            let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0)).map_err(map_err)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)?
+        };
+        conn.execute("DELETE FROM tracks WHERE owner = ?1", params![id]).map_err(map_err)?;
+        conn.execute("DELETE FROM scores WHERE profile_id = ?1", params![id]).map_err(map_err)?;
+        conn.execute("DELETE FROM profiles WHERE id = ?1", params![id]).map_err(map_err)?;
+        conn.execute(
+            "DELETE FROM settings WHERE key = 'active_profile_id' AND value = ?1",
+            params![id],
+        ).map_err(map_err)?;
+        Ok(filenames)
+    }
+
+    pub fn get_active_profile(&self) -> Result<Option<Profile>> {
+        let conn = self.conn.lock().unwrap();
+        let active_id: Option<String> = conn
+            .query_row("SELECT value FROM settings WHERE key = 'active_profile_id'", [], |r| r.get(0))
+            .optional()
+            .map_err(map_err)?;
+        let Some(active_id) = active_id else { return Ok(None) };
+        conn.query_row(
+            "SELECT id, username, created_at FROM profiles WHERE id = ?1",
+            params![active_id],
+            |row| Ok(Profile { id: row.get(0)?, username: row.get(1)?, created_at: row.get(2)? }),
+        ).optional().map_err(map_err)
+    }
+
+    /// Errors if `id` doesn't name an existing profile — switching to a
+    /// stale/unknown id would silently leave the app with no valid active
+    /// profile.
+    pub fn set_active_profile(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let exists: i64 = conn
+            .query_row("SELECT COUNT(*) FROM profiles WHERE id = ?1", params![id], |r| r.get(0))
+            .map_err(map_err)?;
+        if exists == 0 {
+            return Err(CoreError::InvalidParam(format!("no such profile: {id}")));
+        }
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('active_profile_id', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![id],
+        ).map_err(map_err)?;
+        Ok(())
     }
 
     // ─── Tracks / library ───────────────────────────────────────────────────
@@ -148,7 +307,8 @@ impl Store {
         Ok(())
     }
 
-    /// Tracks visible to `owner`: shared (owner IS NULL) plus their own private ones.
+    /// Tracks visible to `owner` (a profile id): shared (owner IS NULL)
+    /// plus their own private ones.
     pub fn list_accessible(&self, owner: &str) -> Result<Vec<Track>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
@@ -208,40 +368,37 @@ impl Store {
     }
 
     // ─── Scores ──────────────────────────────────────────────────────────────
+    // All scoped to a profile_id: each local profile has its own history,
+    // the way its own private library tracks are its own.
 
-    pub fn add_score(&self, entry: &ScoreEntry) -> Result<()> {
+    pub fn add_score(&self, profile_id: &str, entry: &ScoreEntry) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO scores (id, module, score, rounds, level, streak, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![entry.id, entry.module, entry.score, entry.rounds, entry.level, entry.streak, entry.created_at],
+            "INSERT INTO scores (id, profile_id, module, score, rounds, level, streak, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![entry.id, profile_id, entry.module, entry.score, entry.rounds, entry.level, entry.streak, entry.created_at],
         ).map_err(map_err)?;
         Ok(())
     }
 
-    pub fn top_scores(&self, module: &str, limit: i64) -> Result<Vec<ScoreEntry>> {
+    pub fn top_scores(&self, profile_id: &str, module: &str, limit: i64) -> Result<Vec<ScoreEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, module, score, rounds, level, streak, created_at FROM scores WHERE module = ?1 ORDER BY score DESC LIMIT ?2")
+            .prepare(&format!(
+                "SELECT {SCORE_COLUMNS} FROM scores WHERE profile_id = ?1 AND module = ?2 ORDER BY score DESC LIMIT ?3"
+            ))
             .map_err(map_err)?;
-        let rows = stmt
-            .query_map(params![module, limit], |row| {
-                Ok(ScoreEntry {
-                    id: row.get(0)?, module: row.get(1)?, score: row.get(2)?,
-                    rounds: row.get(3)?, level: row.get(4)?, streak: row.get(5)?, created_at: row.get(6)?,
-                })
-            })
-            .map_err(map_err)?;
+        let rows = stmt.query_map(params![profile_id, module, limit], row_to_score).map_err(map_err)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     }
 
-    pub fn progress_overview(&self) -> Result<Vec<ModuleProgress>> {
+    pub fn progress_overview(&self, profile_id: &str) -> Result<Vec<ModuleProgress>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT module, COUNT(*), MAX(score), SUM(score) FROM scores GROUP BY module ORDER BY module")
+            .prepare("SELECT module, COUNT(*), MAX(score), SUM(score) FROM scores WHERE profile_id = ?1 GROUP BY module ORDER BY module")
             .map_err(map_err)?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params![profile_id], |row| {
                 Ok(ModuleProgress {
                     module: row.get(0)?,
                     sessions: row.get(1)?,
@@ -253,15 +410,15 @@ impl Store {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     }
 
-    /// All-time aggregate across every module — feeds the dashboard's stat
-    /// cards (legacy /api/progress/summary).
-    pub fn summary(&self) -> Result<ProgressSummary> {
+    /// All-time aggregate across every module for one profile — feeds the
+    /// dashboard's stat cards (legacy /api/progress/summary).
+    pub fn summary(&self, profile_id: &str) -> Result<ProgressSummary> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT COALESCE(SUM(score),0), COALESCE(SUM(rounds),0),
                      COALESCE(CAST(AVG(score) AS INTEGER),0), COALESCE(MAX(streak),0), COUNT(*)
-              FROM scores",
-            [],
+              FROM scores WHERE profile_id = ?1",
+            params![profile_id],
             |row| {
                 Ok(ProgressSummary {
                     total_points: row.get(0)?,
@@ -274,42 +431,18 @@ impl Store {
         ).map_err(map_err)
     }
 
-    /// Most recent scores across all modules, newest first — feeds the
-    /// dashboard's session-history table and learning-curve chart (legacy
-    /// /api/progress/sessions).
-    pub fn recent_scores(&self, limit: i64) -> Result<Vec<ScoreEntry>> {
+    /// Most recent scores for one profile across all modules, newest first
+    /// — feeds the dashboard's session-history table and learning-curve
+    /// chart (legacy /api/progress/sessions).
+    pub fn recent_scores(&self, profile_id: &str, limit: i64) -> Result<Vec<ScoreEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, module, score, rounds, level, streak, created_at FROM scores ORDER BY created_at DESC LIMIT ?1")
+            .prepare(&format!(
+                "SELECT {SCORE_COLUMNS} FROM scores WHERE profile_id = ?1 ORDER BY created_at DESC LIMIT ?2"
+            ))
             .map_err(map_err)?;
-        let rows = stmt
-            .query_map(params![limit], |row| {
-                Ok(ScoreEntry {
-                    id: row.get(0)?, module: row.get(1)?, score: row.get(2)?,
-                    rounds: row.get(3)?, level: row.get(4)?, streak: row.get(5)?, created_at: row.get(6)?,
-                })
-            })
-            .map_err(map_err)?;
+        let rows = stmt.query_map(params![profile_id, limit], row_to_score).map_err(map_err)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
-    }
-
-    // ─── Local profile ───────────────────────────────────────────────────────
-
-    pub fn get_profile_username(&self) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row("SELECT username FROM profile WHERE id = 1", [], |row| row.get(0))
-            .optional()
-            .map_err(map_err)
-    }
-
-    pub fn set_profile_username(&self, username: &str, created_at: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO profile (id, username, created_at) VALUES (1, ?1, ?2)
-             ON CONFLICT(id) DO UPDATE SET username = excluded.username",
-            params![username, created_at],
-        ).map_err(map_err)?;
-        Ok(())
     }
 }
 
@@ -375,12 +508,12 @@ mod tests {
     fn scores_round_trip_and_top_scores_orders_descending() {
         let store = Store::open_in_memory().unwrap();
         for (i, score) in [300, 900, 600].into_iter().enumerate() {
-            store.add_score(&ScoreEntry {
+            store.add_score("alice", &ScoreEntry {
                 id: format!("s{i}"), module: "eq".into(), score, rounds: 5, level: 2, streak: 3,
                 created_at: "2026-01-01T00:00:00Z".into(),
             }).unwrap();
         }
-        let top = store.top_scores("eq", 2).unwrap();
+        let top = store.top_scores("alice", "eq", 2).unwrap();
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].score, 900);
         assert_eq!(top[1].score, 600);
@@ -389,11 +522,11 @@ mod tests {
     #[test]
     fn progress_overview_aggregates_per_module() {
         let store = Store::open_in_memory().unwrap();
-        store.add_score(&ScoreEntry { id: "1".into(), module: "eq".into(), score: 500, rounds: 3, level: 1, streak: 1, created_at: "t".into() }).unwrap();
-        store.add_score(&ScoreEntry { id: "2".into(), module: "eq".into(), score: 800, rounds: 4, level: 2, streak: 2, created_at: "t".into() }).unwrap();
-        store.add_score(&ScoreEntry { id: "3".into(), module: "reverb".into(), score: 200, rounds: 1, level: 1, streak: 0, created_at: "t".into() }).unwrap();
+        store.add_score("alice", &ScoreEntry { id: "1".into(), module: "eq".into(), score: 500, rounds: 3, level: 1, streak: 1, created_at: "t".into() }).unwrap();
+        store.add_score("alice", &ScoreEntry { id: "2".into(), module: "eq".into(), score: 800, rounds: 4, level: 2, streak: 2, created_at: "t".into() }).unwrap();
+        store.add_score("alice", &ScoreEntry { id: "3".into(), module: "reverb".into(), score: 200, rounds: 1, level: 1, streak: 0, created_at: "t".into() }).unwrap();
 
-        let overview = store.progress_overview().unwrap();
+        let overview = store.progress_overview("alice").unwrap();
         let eq = overview.iter().find(|m| m.module == "eq").unwrap();
         assert_eq!(eq.sessions, 2);
         assert_eq!(eq.best_score, 800);
@@ -419,34 +552,124 @@ mod tests {
         for key in ["module", "sessions", "bestScore", "totalScore"] {
             assert!(pv.get(key).is_some(), "ModuleProgress missing camelCase key {key:?}");
         }
+
+        let prof = Profile { id: "p1".into(), username: "Jan".into(), created_at: "t".into() };
+        let profv = serde_json::to_value(&prof).unwrap();
+        for key in ["id", "username", "createdAt"] {
+            assert!(profv.get(key).is_some(), "Profile missing camelCase key {key:?}");
+        }
     }
 
     #[test]
     fn summary_and_recent_scores_aggregate_across_all_modules() {
         let store = Store::open_in_memory().unwrap();
-        store.add_score(&ScoreEntry { id: "1".into(), module: "eq".into(), score: 500, rounds: 3, level: 1, streak: 2, created_at: "2026-01-01T00:00:00Z".into() }).unwrap();
-        store.add_score(&ScoreEntry { id: "2".into(), module: "reverb".into(), score: 300, rounds: 2, level: 1, streak: 5, created_at: "2026-01-02T00:00:00Z".into() }).unwrap();
+        store.add_score("alice", &ScoreEntry { id: "1".into(), module: "eq".into(), score: 500, rounds: 3, level: 1, streak: 2, created_at: "2026-01-01T00:00:00Z".into() }).unwrap();
+        store.add_score("alice", &ScoreEntry { id: "2".into(), module: "reverb".into(), score: 300, rounds: 2, level: 1, streak: 5, created_at: "2026-01-02T00:00:00Z".into() }).unwrap();
 
-        let summary = store.summary().unwrap();
+        let summary = store.summary("alice").unwrap();
         assert_eq!(summary.total_points, 800);
         assert_eq!(summary.total_rounds, 5);
         assert_eq!(summary.session_count, 2);
         assert_eq!(summary.best_streak, 5);
         assert_eq!(summary.avg_score, 400);
 
-        let recent = store.recent_scores(10).unwrap();
+        let recent = store.recent_scores("alice", 10).unwrap();
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].id, "2", "newest first");
     }
 
     #[test]
-    fn profile_defaults_to_none_then_persists_after_set() {
+    fn scores_are_scoped_per_profile() {
         let store = Store::open_in_memory().unwrap();
-        assert!(store.get_profile_username().unwrap().is_none());
-        store.set_profile_username("Jan", "2026-01-01T00:00:00Z").unwrap();
-        assert_eq!(store.get_profile_username().unwrap().as_deref(), Some("Jan"));
-        // setting again should update, not conflict-error
-        store.set_profile_username("Jan Wiebe", "2026-01-02T00:00:00Z").unwrap();
-        assert_eq!(store.get_profile_username().unwrap().as_deref(), Some("Jan Wiebe"));
+        store.add_score("alice", &ScoreEntry { id: "1".into(), module: "eq".into(), score: 500, rounds: 1, level: 1, streak: 0, created_at: "t".into() }).unwrap();
+        store.add_score("bob", &ScoreEntry { id: "2".into(), module: "eq".into(), score: 900, rounds: 1, level: 1, streak: 0, created_at: "t".into() }).unwrap();
+
+        assert_eq!(store.summary("alice").unwrap().total_points, 500);
+        assert_eq!(store.summary("bob").unwrap().total_points, 900);
+        assert_eq!(store.recent_scores("alice", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn no_active_profile_until_one_is_created_or_switched_to() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.get_active_profile().unwrap().is_none());
+
+        let p = store.create_profile("Jan", "2026-01-01T00:00:00Z").unwrap();
+        let active = store.get_active_profile().unwrap().unwrap();
+        assert_eq!(active.id, p.id);
+        assert_eq!(active.username, "Jan");
+    }
+
+    #[test]
+    fn creating_a_second_profile_switches_active_to_it() {
+        let store = Store::open_in_memory().unwrap();
+        let p1 = store.create_profile("Jan", "t").unwrap();
+        let p2 = store.create_profile("Alex", "t").unwrap();
+        assert_eq!(store.get_active_profile().unwrap().unwrap().id, p2.id);
+
+        store.set_active_profile(&p1.id).unwrap();
+        assert_eq!(store.get_active_profile().unwrap().unwrap().id, p1.id);
+
+        assert_eq!(store.list_profiles().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn switching_to_unknown_profile_id_errors() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_profile("Jan", "t").unwrap();
+        assert!(store.set_active_profile("does-not-exist").is_err());
+    }
+
+    #[test]
+    fn deleting_a_profile_removes_its_private_tracks_and_scores_but_not_shared() {
+        let store = Store::open_in_memory().unwrap();
+        let p = store.create_profile("Jan", "t").unwrap();
+        store.add_track(&sample_track("private1", Some(&p.id), true)).unwrap();
+        store.add_track(&sample_track("shared1", None, true)).unwrap();
+        store.add_score(&p.id, &ScoreEntry { id: "s1".into(), module: "eq".into(), score: 1, rounds: 1, level: 1, streak: 0, created_at: "t".into() }).unwrap();
+
+        let removed_filenames = store.delete_profile(&p.id).unwrap();
+        assert_eq!(removed_filenames, vec!["private1.mp3".to_string()]);
+        assert!(store.get_track("private1").unwrap().is_none());
+        assert!(store.get_track("shared1").unwrap().is_some(), "shared tracks must survive a profile deletion");
+        assert!(store.get_active_profile().unwrap().is_none(), "deleting the active profile leaves none active");
+        assert_eq!(store.list_profiles().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn legacy_single_profile_table_migrates_into_profiles_and_reowns_tracks() {
+        // Simulate a pre-multi-profile database on disk, then reopen it via
+        // Store::open() (open_in_memory() bypasses the file-based migration
+        // path, so this test uses a real temp file).
+        let dir = std::env::temp_dir().join(format!("paw-migration-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("data.db");
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tracks (id TEXT PRIMARY KEY, filename TEXT NOT NULL, original_name TEXT NOT NULL,
+                    size INTEGER NOT NULL, duration REAL, mime_type TEXT, active INTEGER NOT NULL DEFAULT 1,
+                    owner TEXT, added_at TEXT NOT NULL);
+                 CREATE TABLE profile (id INTEGER PRIMARY KEY CHECK (id = 1), username TEXT NOT NULL, created_at TEXT NOT NULL);
+                 INSERT INTO profile (id, username, created_at) VALUES (1, 'Jan', '2026-01-01T00:00:00Z');
+                 INSERT INTO tracks (id, filename, original_name, size, active, owner, added_at)
+                    VALUES ('t1', 't1.mp3', 't1.mp3', 100, 1, 'Jan', '2026-01-01T00:00:00Z');",
+            ).unwrap();
+        }
+
+        let store = Store::open(&db_path).unwrap();
+        let active = store.get_active_profile().unwrap().expect("migrated profile should be active");
+        assert_eq!(active.username, "Jan");
+
+        let track = store.get_track("t1").unwrap().unwrap();
+        assert_eq!(track.owner.as_deref(), Some(active.id.as_str()), "track ownership should follow the migrated profile id, not the old bare username");
+
+        // Reopening again must not re-migrate or duplicate the profile.
+        drop(store);
+        let store2 = Store::open(&db_path).unwrap();
+        assert_eq!(store2.list_profiles().unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -110,12 +110,13 @@ class App {
   async init() {
     this.setupEventListeners();
     if (window.__TAURI__) {
-      // Desktop build: no network auth. A single local profile (just a
-      // display name, no password) is created once on first launch and
-      // reused on every subsequent start.
-      const existingName = await invokeTauri('profile_get').catch(() => null);
-      if (existingName) {
-        CURRENT_USER = { username: existingName, role: 'local' };
+      // Desktop build: no network auth. One or more local profiles (just a
+      // display name each, no password) can exist per install — the active
+      // one is created on first launch and reused on every subsequent
+      // start, or switched via the PROFIL button in the header.
+      const active = await invokeTauri('profile_get_active').catch(() => null);
+      if (active) {
+        CURRENT_USER = { username: active.username, role: 'local', profileId: active.id };
         this.showApp();
       } else {
         this.showOnboarding();
@@ -172,6 +173,18 @@ class App {
     if (sidebarAdminBtn) sidebarAdminBtn.style.display = isAdmin ? '' : 'none';
     const sidebarSystemSection = document.getElementById('sidebar-system-section');
     if (sidebarSystemSection) sidebarSystemSection.style.display = isAdmin ? '' : 'none';
+
+    // Desktop: local profiles, not accounts — no password/logout, but a
+    // profile switcher (multiple people can share one install).
+    const profileBtn = document.getElementById('profile-switch-btn');
+    const pwBtn = document.getElementById('change-password-btn');
+    const logoutBtn = document.getElementById('logout-btn');
+    if (window.__TAURI__) {
+      if (profileBtn) profileBtn.style.display = '';
+      if (pwBtn) pwBtn.style.display = 'none';
+      if (logoutBtn) logoutBtn.style.display = 'none';
+    }
+
     this.loadModule('eq-trainer');
     this.startHeaderVU();
     this.loadHighscores();
@@ -243,6 +256,64 @@ class App {
     await hsm.renderTo('highscore-list');
   }
 
+  async openProfileSwitchModal() {
+    const modal = document.getElementById('profile-list');
+    const errorEl = document.getElementById('profile-error');
+    errorEl.textContent = '';
+    modal.innerHTML = '<div style="color:var(--text-dim);font-family:monospace;font-size:12px;">Lade…</div>';
+    document.getElementById('profile-switch-modal').style.display = 'flex';
+
+    try {
+      const [profiles, active] = await Promise.all([
+        invokeTauri('profile_list'),
+        invokeTauri('profile_get_active'),
+      ]);
+      modal.innerHTML = profiles.map(p => {
+        const isActive = active && p.id === active.id;
+        const canDelete = !isActive && profiles.length > 1;
+        return `
+          <div style="display:flex;align-items:center;gap:8px;background:#0d0d1a;border:1px solid #2a2a4e;border-radius:4px;padding:8px 10px;">
+            <span style="flex:1;font-family:monospace;font-size:13px;color:${isActive ? '#d4af37' : '#fff'};">
+              ${this.escapeHtml(p.username)}${isActive ? ' (aktiv)' : ''}
+            </span>
+            ${isActive ? '' : `<button class="btn-rack btn-rack--sm" data-switch="${p.id}" style="font-size:11px;">WECHSELN</button>`}
+            ${canDelete ? `<button class="btn-rack btn-rack--sm" data-delete="${p.id}" style="font-size:11px;">LÖSCHEN</button>` : ''}
+          </div>`;
+      }).join('');
+
+      modal.querySelectorAll('[data-switch]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          try {
+            await invokeTauri('profile_switch', { id: btn.dataset.switch });
+            location.reload();
+          } catch (err) {
+            errorEl.textContent = String(err);
+          }
+        });
+      });
+      modal.querySelectorAll('[data-delete]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Dieses Profil inkl. eigener Bibliothek und Punktestand löschen?')) return;
+          try {
+            await invokeTauri('profile_delete', { id: btn.dataset.delete });
+            this.openProfileSwitchModal(); // refresh the list in place
+          } catch (err) {
+            errorEl.textContent = String(err);
+          }
+        });
+      });
+    } catch (err) {
+      modal.innerHTML = '';
+      errorEl.textContent = String(err);
+    }
+  }
+
+  escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
   setupEventListeners() {
     // Login form
     document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -260,8 +331,8 @@ class App {
       if (this._onboarding) {
         // Desktop first-launch: create the local profile, no auth involved.
         try {
-          await invokeTauri('profile_set', { username });
-          CURRENT_USER = { username, role: 'local' };
+          const profile = await invokeTauri('profile_create', { username });
+          CURRENT_USER = { username: profile.username, role: 'local', profileId: profile.id };
           this.showApp();
         } catch (err) {
           errorEl.textContent = String(err);
@@ -289,6 +360,30 @@ class App {
         errorEl.textContent = err.message;
         if (led) led.classList.remove('active');
         btn.disabled = false;
+      }
+    });
+
+    // Profile Switch Modal (desktop only)
+    document.getElementById('profile-switch-btn').addEventListener('click', () => {
+      this.openProfileSwitchModal();
+    });
+    document.getElementById('profile-switch-cancel').addEventListener('click', () => {
+      document.getElementById('profile-switch-modal').style.display = 'none';
+    });
+    document.getElementById('profile-switch-modal').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) e.currentTarget.style.display = 'none';
+    });
+    document.getElementById('profile-create-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('profile-new-name');
+      const errorEl = document.getElementById('profile-error');
+      errorEl.textContent = '';
+      try {
+        await invokeTauri('profile_create', { username: input.value });
+        input.value = '';
+        location.reload(); // simplest way to re-init every module's state for the new active profile
+      } catch (err) {
+        errorEl.textContent = String(err);
       }
     });
 

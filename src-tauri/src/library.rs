@@ -1,12 +1,16 @@
 //! Library management — Tauri commands backed by the SQLite Store
 //! (paw_core::store). Audio files live under `AppState.library_dir`;
 //! metadata (ownership, active flag, duration) lives in the DB.
+//!
+//! `owner: None` on a track means shared content (e.g. a pack a teacher
+//! prepared and everyone imports locally, see `library_import_shared_folder`);
+//! `owner: Some(profile_id)` is private to that local profile.
 
-use crate::state::{current_owner, now_iso, AppState};
+use crate::state::{current_profile_id, now_iso, AppState};
 use paw_core::decode;
 use paw_core::store::Track;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const ALLOWED_EXTENSIONS: &[&str] = &["mp3", "wav", "flac", "ogg", "aiff", "aif", "m4a", "aac"];
 /// Generous but bounded — a single lossless track rarely exceeds a few
@@ -23,7 +27,7 @@ pub struct LibraryTrackDto {
     pub path: String,
 }
 
-fn guess_mime_type(path: &std::path::Path) -> Option<String> {
+fn guess_mime_type(path: &Path) -> Option<String> {
     let ext = path.extension()?.to_str()?.to_lowercase();
     Some(match ext.as_str() {
         "mp3" => "audio/mpeg",
@@ -36,9 +40,83 @@ fn guess_mime_type(path: &std::path::Path) -> Option<String> {
     }.to_string())
 }
 
+/// Copy one source file into `library_dir` and register it with the given
+/// `owner` (None = shared). Returns `true` if it was imported, `false` if
+/// it was skipped (wrong extension, too large, or doesn't actually decode
+/// as audio) — never fatal to a batch import.
+fn import_one_file(library_dir: &Path, db: &paw_core::store::Store, src: &Path, owner: Option<&str>) -> bool {
+    let Some(original_name) = src.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else { return false };
+
+    let ext = src.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
+    let Some(ext) = ext else { return false }; // no extension at all — reject
+    if !ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
+        return false;
+    }
+    let Ok(src_size) = std::fs::metadata(src).map(|m| m.len()) else { return false };
+    if src_size == 0 || src_size > MAX_UPLOAD_BYTES {
+        return false;
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let stored_filename = format!("{id}.{ext}");
+    let dest = library_dir.join(&stored_filename);
+
+    if std::fs::copy(src, &dest).is_err() {
+        return false;
+    }
+
+    // Reject anything that doesn't actually decode as audio — an
+    // undecodable file entering the active pool would otherwise only
+    // surface as an opaque failure the next time it's randomly picked
+    // for an exercise, with no indication of which file is broken.
+    let Ok(duration) = decode::probe_duration_secs(&dest) else {
+        let _ = std::fs::remove_file(&dest);
+        return false;
+    };
+
+    let track = Track {
+        id,
+        filename: stored_filename,
+        original_name,
+        size: src_size as i64,
+        duration: Some(duration),
+        mime_type: guess_mime_type(&dest),
+        active: true,
+        owner: owner.map(|s| s.to_string()),
+        added_at: now_iso(),
+    };
+    if db.add_track(&track).is_ok() {
+        true
+    } else {
+        let _ = std::fs::remove_file(&dest);
+        false
+    }
+}
+
+/// Recursively collect files under `dir` whose extension is in
+/// ALLOWED_EXTENSIONS (case-insensitive) — used for shared-folder import,
+/// where a teacher's prepared pack may have subfolders per category (the
+/// bundled EchoThief content is organized the same way).
+fn scan_audio_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_audio_files(&path, out);
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| ALLOWED_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+            .unwrap_or(false)
+        {
+            out.push(path);
+        }
+    }
+}
+
 #[tauri::command]
 pub fn library_list(state: tauri::State<AppState>) -> Result<Vec<LibraryTrackDto>, String> {
-    let owner = current_owner(&state.db);
+    let owner = current_profile_id(&state.db)?;
     let tracks = state.db.list_accessible(&owner).map_err(|e| e.to_string())?;
     Ok(tracks
         .into_iter()
@@ -49,65 +127,36 @@ pub fn library_list(state: tauri::State<AppState>) -> Result<Vec<LibraryTrackDto
         .collect())
 }
 
-/// Copy each source file into the managed library dir and register it.
-/// Returns how many were imported (files that fail validation, copying, or
-/// decoding are skipped, not fatal to the whole batch — the frontend shows
-/// the returned count so a partial import is visible to the user).
+/// Copy each source file into the managed library dir as a *private* track
+/// owned by the active profile. Returns how many were imported (files that
+/// fail validation, copying, or decoding are skipped, not fatal to the
+/// whole batch — the frontend shows the returned count so a partial import
+/// is visible to the user).
 #[tauri::command]
 pub fn library_upload(paths: Vec<String>, state: tauri::State<AppState>) -> Result<u32, String> {
     std::fs::create_dir_all(&state.library_dir).map_err(|e| e.to_string())?;
-    let owner = current_owner(&state.db);
-    let mut imported = 0u32;
+    let owner = current_profile_id(&state.db)?;
+    let imported = paths
+        .iter()
+        .filter(|p| import_one_file(&state.library_dir, &state.db, Path::new(p), Some(&owner)))
+        .count();
+    Ok(imported as u32)
+}
 
-    for p in paths {
-        let src = PathBuf::from(&p);
-        let Some(original_name) = src.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else { continue };
-
-        let ext = src.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
-        let Some(ext) = ext else { continue }; // no extension at all — reject
-        if !ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
-            continue;
-        }
-        let Ok(src_size) = std::fs::metadata(&src).map(|m| m.len()) else { continue };
-        if src_size == 0 || src_size > MAX_UPLOAD_BYTES {
-            continue;
-        }
-
-        let id = uuid::Uuid::new_v4().to_string();
-        let stored_filename = format!("{id}.{ext}");
-        let dest = state.library_dir.join(&stored_filename);
-
-        if std::fs::copy(&src, &dest).is_err() {
-            continue;
-        }
-
-        // Reject anything that doesn't actually decode as audio — an
-        // undecodable file entering the active pool would otherwise only
-        // surface as an opaque failure the next time it's randomly picked
-        // for an exercise, with no indication of which file is broken.
-        let Ok(duration) = decode::probe_duration_secs(&dest) else {
-            let _ = std::fs::remove_file(&dest);
-            continue;
-        };
-
-        let track = Track {
-            id,
-            filename: stored_filename,
-            original_name,
-            size: src_size as i64,
-            duration: Some(duration),
-            mime_type: guess_mime_type(&dest),
-            active: true,
-            owner: Some(owner.clone()),
-            added_at: now_iso(),
-        };
-        if state.db.add_track(&track).is_ok() {
-            imported += 1;
-        } else {
-            let _ = std::fs::remove_file(&dest);
-        }
-    }
-    Ok(imported)
+/// Import every audio file under `folder_path` (recursively) as *shared*
+/// content — the local counterpart to a central content pack: a teacher
+/// prepares a folder (e.g. on a USB stick or network share) and each
+/// install imports it once. No server/network distribution involved.
+#[tauri::command]
+pub fn library_import_shared_folder(folder_path: String, state: tauri::State<AppState>) -> Result<u32, String> {
+    std::fs::create_dir_all(&state.library_dir).map_err(|e| e.to_string())?;
+    let mut files = Vec::new();
+    scan_audio_files(Path::new(&folder_path), &mut files);
+    let imported = files
+        .iter()
+        .filter(|p| import_one_file(&state.library_dir, &state.db, p, None))
+        .count();
+    Ok(imported as u32)
 }
 
 #[tauri::command]
@@ -115,10 +164,24 @@ pub fn library_toggle_active(id: String, active: bool, state: tauri::State<AppSt
     state.db.set_active(&id, active).map_err(|e| e.to_string())
 }
 
+/// Deletes a track's DB row and underlying file. A private track can only
+/// be deleted by its own profile — without this check, any profile could
+/// delete any other profile's private track by id. Shared tracks (owner
+/// IS NULL) can be deleted by any profile: they're this install's own
+/// local copy of a shared pack, not a live central resource other people
+/// depend on, so this is ordinary local housekeeping, not something that
+/// needs protecting the way cross-profile private files do.
 #[tauri::command]
 pub fn library_delete(id: String, state: tauri::State<AppState>) -> Result<(), String> {
-    if let Some(track) = state.db.get_track(&id).map_err(|e| e.to_string())? {
-        let _ = std::fs::remove_file(state.library_dir.join(&track.filename));
+    let owner = current_profile_id(&state.db)?;
+    let Some(track) = state.db.get_track(&id).map_err(|e| e.to_string())? else {
+        return Ok(()); // already gone — deleting a nonexistent id is a no-op, not an error
+    };
+    if let Some(track_owner) = &track.owner {
+        if track_owner != &owner {
+            return Err("Diese Datei gehört einem anderen Profil.".to_string());
+        }
     }
+    let _ = std::fs::remove_file(state.library_dir.join(&track.filename));
     state.db.delete_track(&id).map_err(|e| e.to_string())
 }

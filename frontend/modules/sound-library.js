@@ -29,6 +29,14 @@ class SoundLibraryModule {
           </div>
         </div>
 
+        <div class="lib-upload-zone" id="import-shared-zone" style="margin-top:8px;">
+          <div class="upload-inner">
+            <div class="upload-icon">⇱</div>
+            <p class="upload-text">Geteilten Ordner importieren</p>
+            <p class="upload-sub">Für Ordner, die z.B. von der Schule bereitgestellt wurden — für alle Profile auf diesem Rechner sichtbar</p>
+          </div>
+        </div>
+
         <div class="lib-stats">
           <div class="stat-box">
             <span class="stat-label">FILES</span>
@@ -49,6 +57,7 @@ class SoundLibraryModule {
     `;
 
     this.container.querySelector('#upload-zone').addEventListener('click', () => this.pickFiles());
+    this.container.querySelector('#import-shared-zone').addEventListener('click', () => this.pickSharedFolder());
   }
 
   async loadLibrary() {
@@ -72,6 +81,22 @@ class SoundLibraryModule {
       await this.handleFiles(paths);
     } catch (err) {
       showToast(`Dateiauswahl fehlgeschlagen: ${err}`, 'error');
+    }
+  }
+
+  async pickSharedFolder() {
+    if (this.uploading) return;
+    try {
+      const selected = await window.__TAURI__.dialog.open({ directory: true, multiple: false });
+      if (!selected) return; // user cancelled
+      this.uploading = true;
+      const imported = await invokeTauri('library_import_shared_folder', { folderPath: selected });
+      showToast(`${imported} geteilte Datei(en) importiert`, 'success');
+      await this.loadLibrary();
+    } catch (err) {
+      showToast(`Import fehlgeschlagen: ${err}`, 'error');
+    } finally {
+      this.uploading = false;
     }
   }
 

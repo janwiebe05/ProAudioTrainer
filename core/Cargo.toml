@@ -13,6 +13,7 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 hound = "3"
 rusqlite = { version = "0.31", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 approx = "0.5"

@@ -125,8 +125,24 @@
         </div>
         <div class="header-user">
           <span class="header-username" id="header-username">—</span>
+          <button class="btn-rack btn-rack--sm" id="profile-switch-btn" title="Profil wechseln" style="display:none">PROFIL</button>
           <button class="btn-rack btn-rack--sm" id="change-password-btn" title="Passwort ändern">PW</button>
           <button class="btn-rack btn-rack--sm" id="logout-btn">LOGOUT</button>
+        </div>
+      </div>
+
+      <!-- Profile Switch Modal (desktop only — local profiles, no accounts) -->
+      <div id="profile-switch-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;align-items:center;justify-content:center;">
+        <div style="background:#1a1a2e;border:1px solid #2a2a4e;border-radius:8px;padding:2rem;width:360px;max-width:90vw;">
+          <h3 style="color:#d4af37;font-family:monospace;letter-spacing:2px;margin:0 0 1.5rem;font-size:14px;">PROFILE</h3>
+          <div id="profile-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:1.5rem;max-height:240px;overflow-y:auto;"></div>
+          <form id="profile-create-form" style="display:flex;gap:8px;margin-bottom:1rem;">
+            <input type="text" id="profile-new-name" placeholder="Neues Profil…" autocomplete="off"
+              style="flex:1;background:#0d0d1a;border:1px solid #2a2a4e;color:#fff;padding:8px 10px;border-radius:4px;font-family:monospace;font-size:13px;box-sizing:border-box;" />
+            <button type="submit" class="btn-rack btn-rack--sm" style="font-size:12px;">ANLEGEN</button>
+          </form>
+          <div id="profile-error" style="color:#ff4444;font-size:12px;font-family:monospace;margin-bottom:1rem;min-height:16px;"></div>
+          <button type="button" id="profile-switch-cancel" class="btn-rack btn-rack--sm" style="width:100%;font-size:12px;">SCHLIESSEN</button>
         </div>
       </div>
 

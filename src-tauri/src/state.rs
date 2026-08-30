@@ -50,12 +50,17 @@ pub fn take_exercise<T>(
         .ok_or_else(|| "Übung nicht gefunden oder abgelaufen".to_string())
 }
 
-/// The current local profile's name, used to decide which private tracks
-/// are visible. Falls back to a fixed name if onboarding hasn't run yet
-/// (shouldn't normally happen — the frontend prompts for a profile name on
-/// first launch — but exercise commands shouldn't hard-fail over it).
-pub fn current_owner(db: &Store) -> String {
-    db.get_profile_username().ok().flatten().unwrap_or_else(|| "local".to_string())
+/// The active local profile's id, used to decide which private tracks/
+/// scores are visible. Multiple profiles can exist per install (see
+/// paw_core::store); this is a real error, not a silent fallback, if
+/// onboarding hasn't run yet or the active profile was deleted — every
+/// caller needs a real profile id, and guessing one would misattribute
+/// data to the wrong person.
+pub fn current_profile_id(db: &Store) -> Result<String, String> {
+    db.get_active_profile()
+        .map_err(|e| e.to_string())?
+        .map(|p| p.id)
+        .ok_or_else(|| "Kein aktives Profil. Bitte zuerst ein Profil anlegen oder auswählen.".to_string())
 }
 
 /// Pick a random active, accessible track from the DB-backed library and
@@ -63,7 +68,7 @@ pub fn current_owner(db: &Store) -> String {
 /// single open+probe pass (decode::decode_random_window), not the old
 /// separate probe_duration_secs()+decode_clip() two-call, two-open dance.
 pub fn load_random_clip(library_dir: &Path, db: &Store, rng: &mut impl Rng) -> Result<AudioBuffer, String> {
-    let owner = current_owner(db);
+    let owner = current_profile_id(db)?;
     let track = db
         .pick_random_active_track(&owner, rng)
         .map_err(|e| e.to_string())?
