@@ -22,21 +22,15 @@ section.
 
 ### Should-have
 
-- **Delay/Echo Trainer.** The one classic SoundGym module with no
-  equivalent here. Needs a new `paw-core::dsp::delay` (a delay line with
-  feedback — much simpler than the reverb convolution, no FFT needed) and
-  a new `paw-core::exercise::delay` following the existing dynamics-style
-  level pattern (L1 type-only, L2 discrete time/feedback buckets, L3 exact
-  ms values). Fits the established `render_random_exercise` pattern
-  directly.
-
-- **Phase/comb-filter trainer + mono-compatibility check.** Reuses the
-  delay-line DSP built for the item above, just tuned to sub-20ms ranges
-  plus a polarity-invert flag, instead of a separate DSP module. Mono
+- **Phase/comb-filter trainer + mono-compatibility check.** No standalone
+  echo trainer planned (see declined, below), so this needs its own small
+  `paw-core::dsp::delay` — but a much narrower one than a general-purpose
+  echo effect: just a single short delay tap (sub-20ms) plus a
+  polarity-invert flag, tuned specifically for audible comb-filtering/
+  phase-cancellation, not a musical echo with feedback/repeats. Mono
   compatibility (stereo source summed to mono, judge how much is lost) can
   reuse the existing `dsp::stereo_width` code almost as-is — mostly a new
-  exercise flow, very little new DSP. Do this together with the delay
-  trainer, not before it.
+  exercise flow, very little new DSP.
 
 - **Golden Ears-style composite score.** An aggregate certification/rank
   computed across all modules' `progress_overview()` data (already scoped
@@ -51,16 +45,6 @@ section.
   reconstructable from `scores`) and a level-selection policy in the
   frontend or a new command; the existing three-level generate() functions
   don't need to change, only how a level gets chosen per round.
-
-- **Reference-track comparison (light version, not a full mixer).**
-  Explicitly *not* "remix stems until it matches a reference" (that's a
-  DAW-lite feature, real effort, not recommended). Instead: load two
-  finished files (the student's own mix + a reference), compute/display
-  loudness (RMS at least, LUFS if the loudness-trainer work below happens
-  first), a coarse frequency-balance comparison, and stereo width/
-  correlation — plus a light ear-training quiz ("which one is louder /
-  brighter / wider?") built from the student's own uploaded pairs. No new
-  effect chain, just analysis of two already-rendered files.
 
 - **Noise/hum identification trainer.** Recognizing 50/60Hz mains hum,
   ground-loop noise, etc. — relevant for live sound and broadcast work.
@@ -78,17 +62,16 @@ section.
 
 ## Explicitly declined for now
 
+- **Delay/Echo Trainer** (standalone musical-echo module). Not needed.
+- **Reference-track comparison** (even the light, non-mixer version).
+  Leave out for now.
 - **Leaderboards/competitions.** Doesn't fit the local-first, per-profile
   model as it stands. Could reconsider *only* as an opt-in, lightweight
   classroom view for a teacher later — not planned now.
 - **LUFS/loudness trainer as its own module.** Not a priority right now.
-  (Note: if the reference-track comparison above eventually wants real
-  LUFS instead of RMS, that's a small, separable addition to revisit then
-  — not blocking.)
 - **Full "remix to match a reference" mixer.** Real DAW-lite scope
   (multitrack input, per-channel strips, live mixing UI) — not worth the
-  effort for what this app is. The light comparison version above covers
-  the valuable part of this idea instead.
+  effort for what this app is.
 
 ## Still open / not yet decided
 
