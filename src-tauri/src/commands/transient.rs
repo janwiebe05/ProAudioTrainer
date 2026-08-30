@@ -1,4 +1,4 @@
-use crate::state::{load_random_clip, write_dry_wet, AppState};
+use crate::state::{render_random_exercise, AppState};
 use paw_core::store::Store;
 use paw_core::exercise::transient::{self, TransientExercise};
 use serde::Serialize;
@@ -29,17 +29,18 @@ pub fn transient_random_impl(
     cache_dir: &std::path::Path,
     exercises: &Mutex<HashMap<String, TransientExercise>>,
 ) -> Result<TransientRandomResponse, String> {
-    let mut rng = rand::thread_rng();
-    let dry = load_random_clip(library_dir, db, &mut rng)?;
-
-    let exercise = transient::generate(level, &mut rng);
-    let wet = transient::render(&dry, &exercise);
-    let (dry_path, processed_path) = write_dry_wet(cache_dir, &dry, &wet)?;
+    let (exercise_id, dry_path, processed_path, exercise) = render_random_exercise(
+        library_dir, db, cache_dir, exercises,
+        |dry, rng| {
+            let exercise = transient::generate(level, rng);
+            let wet = transient::render(dry, &exercise);
+            Ok((exercise, wet))
+        },
+    )?;
     let preset = transient::preset(exercise.correct_answer);
 
-    let exercise_id = uuid::Uuid::new_v4().to_string();
-    let response = TransientRandomResponse {
-        exercise_id: exercise_id.clone(),
+    Ok(TransientRandomResponse {
+        exercise_id,
         dry_path,
         processed_path,
         level: exercise.level,
@@ -47,9 +48,7 @@ pub fn transient_random_impl(
         attack_ms: preset.attack_ms,
         ratio: preset.ratio,
         threshold_db: preset.threshold_db,
-    };
-    exercises.lock().unwrap().insert(exercise_id, exercise);
-    Ok(response)
+    })
 }
 
 #[derive(Serialize)]

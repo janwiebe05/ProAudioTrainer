@@ -78,6 +78,33 @@ pub fn load_random_clip(library_dir: &Path, db: &Store, rng: &mut impl Rng) -> R
     decode::decode_random_window(&track_path, CLIP_DURATION_SECS, rng).map_err(|e| e.to_string())
 }
 
+/// The shape every `*_random_impl` (except eq_match, which doesn't render
+/// anything) follows: pick a random clip, generate+render an exercise from
+/// it, write dry/wet WAV files, store the exercise keyed by a fresh id.
+/// `generate_and_render` gets the decoded dry clip and an rng and returns
+/// the exercise plus its rendered wet buffer — everything module-specific
+/// (level configs, extra params, loading a reverb IR, adapting dynamics
+/// thresholds to the signal, ...) lives entirely in that closure, so this
+/// only factors out the parts that were previously copy-pasted identically
+/// into every commands/*.rs file.
+pub fn render_random_exercise<T: Clone>(
+    library_dir: &Path,
+    db: &Store,
+    cache_dir: &Path,
+    exercises: &Mutex<HashMap<String, T>>,
+    generate_and_render: impl FnOnce(&AudioBuffer, &mut rand::rngs::ThreadRng) -> Result<(T, AudioBuffer), String>,
+) -> Result<(String, String, String, T), String> {
+    let mut rng = rand::thread_rng();
+    let dry = load_random_clip(library_dir, db, &mut rng)?;
+    let (exercise, wet) = generate_and_render(&dry, &mut rng)?;
+    let (dry_path, processed_path) = write_dry_wet(cache_dir, &dry, &wet)?;
+
+    let exercise_id = uuid::Uuid::new_v4().to_string();
+    let exercise_for_response = exercise.clone();
+    exercises.lock().unwrap().insert(exercise_id.clone(), exercise);
+    Ok((exercise_id, dry_path, processed_path, exercise_for_response))
+}
+
 /// Write dry+wet buffers to the cache dir as WAV, return their paths.
 /// Encodes+writes both concurrently — they're fully independent, and this
 /// runs on every single exercise round.

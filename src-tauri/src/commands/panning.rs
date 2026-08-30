@@ -1,4 +1,4 @@
-use crate::state::{load_random_clip, write_dry_wet, AppState};
+use crate::state::{render_random_exercise, AppState};
 use paw_core::store::Store;
 use paw_core::exercise::panning::{self, PanZone, PanningExercise, WidthStep, PAN_ZONES, WIDTH_STEPS};
 use serde::Serialize;
@@ -35,12 +35,14 @@ pub fn panning_random_impl(
     cache_dir: &std::path::Path,
     exercises: &Mutex<HashMap<String, PanningExercise>>,
 ) -> Result<PanningRandomResponse, String> {
-    let mut rng = rand::thread_rng();
-    let dry = load_random_clip(library_dir, db, &mut rng)?;
-
-    let exercise = panning::generate(level, &mut rng);
-    let wet = panning::render(&dry, &exercise);
-    let (dry_path, processed_path) = write_dry_wet(cache_dir, &dry, &wet)?;
+    let (exercise_id, dry_path, processed_path, exercise) = render_random_exercise(
+        library_dir, db, cache_dir, exercises,
+        |dry, rng| {
+            let exercise = panning::generate(level, rng);
+            let wet = panning::render(dry, &exercise);
+            Ok((exercise, wet))
+        },
+    )?;
 
     let (guess_mode, zone_id, pan_value, width_id, width) = match &exercise {
         PanningExercise::Zone { zone_idx } => ("zone", Some(PAN_ZONES[*zone_idx].id), Some(PAN_ZONES[*zone_idx].value), None, None),
@@ -48,9 +50,8 @@ pub fn panning_random_impl(
         PanningExercise::Width { step_idx } => ("width", None, None, Some(WIDTH_STEPS[*step_idx].id), Some(WIDTH_STEPS[*step_idx].value)),
     };
 
-    let exercise_id = uuid::Uuid::new_v4().to_string();
-    let response = PanningRandomResponse {
-        exercise_id: exercise_id.clone(),
+    Ok(PanningRandomResponse {
+        exercise_id,
         dry_path,
         processed_path,
         guess_mode,
@@ -60,9 +61,7 @@ pub fn panning_random_impl(
         width,
         pan_zones: &PAN_ZONES,
         width_steps: &WIDTH_STEPS,
-    };
-    exercises.lock().unwrap().insert(exercise_id, exercise);
-    Ok(response)
+    })
 }
 
 pub fn panning_evaluate_impl(

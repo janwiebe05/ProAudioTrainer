@@ -1,4 +1,4 @@
-use crate::state::{load_random_clip, write_dry_wet, AppState};
+use crate::state::{render_random_exercise, AppState};
 use paw_core::store::Store;
 use paw_core::exercise::eq::{self, EqExercise};
 use serde::Serialize;
@@ -31,25 +31,24 @@ pub fn eq_random_impl(
     cache_dir: &std::path::Path,
     exercises: &Mutex<HashMap<String, EqExercise>>,
 ) -> Result<EqRandomResponse, String> {
-    let mut rng = rand::thread_rng();
-    let dry = load_random_clip(library_dir, db, &mut rng)?;
+    let (exercise_id, dry_path, processed_path, exercise) = render_random_exercise(
+        library_dir, db, cache_dir, exercises,
+        |dry, rng| {
+            let exercise = eq::generate(level, freq_min, freq_max, rng);
+            let wet = eq::render(dry, &exercise);
+            Ok((exercise, wet))
+        },
+    )?;
 
-    let exercise = eq::generate(level, freq_min, freq_max, &mut rng);
-    let wet = eq::render(&dry, &exercise);
-    let (dry_path, processed_path) = write_dry_wet(cache_dir, &dry, &wet)?;
-
-    let exercise_id = uuid::Uuid::new_v4().to_string();
-    let response = EqRandomResponse {
-        exercise_id: exercise_id.clone(),
+    Ok(EqRandomResponse {
+        exercise_id,
         dry_path,
         processed_path,
         level: exercise.level,
         gain_db: exercise.gain_db,
         freq_min: exercise.freq_min,
         freq_max: exercise.freq_max,
-    };
-    exercises.lock().unwrap().insert(exercise_id, exercise);
-    Ok(response)
+    })
 }
 
 pub fn eq_evaluate_impl(

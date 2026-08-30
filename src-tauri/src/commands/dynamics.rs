@@ -1,4 +1,4 @@
-use crate::state::{load_random_clip, write_dry_wet, AppState};
+use crate::state::{render_random_exercise, AppState};
 use paw_core::store::Store;
 use paw_core::exercise::dynamics::{self, DynamicsExercise, DynamicsGuess, EffectType, GuessMode};
 use serde::Serialize;
@@ -58,17 +58,18 @@ pub fn dynamics_random_impl(
     cache_dir: &std::path::Path,
     exercises: &Mutex<HashMap<String, DynamicsExercise>>,
 ) -> Result<DynamicsRandomResponse, String> {
-    let mut rng = rand::thread_rng();
-    let dry = load_random_clip(library_dir, db, &mut rng)?;
+    let (exercise_id, dry_path, processed_path, exercise) = render_random_exercise(
+        library_dir, db, cache_dir, exercises,
+        |dry, rng| {
+            let mut exercise = dynamics::generate(level, rng);
+            exercise.params = dynamics::adapt_params_to_signal(dry, &exercise.params, exercise.effect);
+            let wet = dynamics::render(dry, &exercise);
+            Ok((exercise, wet))
+        },
+    )?;
 
-    let mut exercise = dynamics::generate(level, &mut rng);
-    exercise.params = dynamics::adapt_params_to_signal(&dry, &exercise.params, exercise.effect);
-    let wet = dynamics::render(&dry, &exercise);
-    let (dry_path, processed_path) = write_dry_wet(cache_dir, &dry, &wet)?;
-
-    let exercise_id = uuid::Uuid::new_v4().to_string();
-    let response = DynamicsRandomResponse {
-        exercise_id: exercise_id.clone(),
+    Ok(DynamicsRandomResponse {
+        exercise_id,
         dry_path,
         processed_path,
         effect: effect_to_str(exercise.effect),
@@ -81,9 +82,7 @@ pub fn dynamics_random_impl(
         amount_index: exercise.amount_index,
         amount_labels: dynamics::AMOUNT_LABELS.to_vec(),
         level: exercise.level,
-    };
-    exercises.lock().unwrap().insert(exercise_id, exercise);
-    Ok(response)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

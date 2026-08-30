@@ -128,3 +128,52 @@ class DryWetPlayer {
     this.analyser.disconnect();
   }
 }
+
+// ─── Round Timer ─────────────────────────────────────────────────────────────
+// Every trainer module (dynamics/panning/stereo/transient/reverb-trainer.js)
+// currently hand-rolls the same setInterval loop: track elapsed seconds,
+// update a timer bar/text element, call a timeout callback once maxSeconds
+// is reached. This class exists to give the *next* trainer module (or a
+// future cleanup pass through the existing five, which — being a working,
+// tested behavior change across five files — is deliberately not bundled
+// into this same commit) one shared, tested place for that logic instead
+// of a sixth copy-paste.
+class RoundTimer {
+  /**
+   * @param {object} opts
+   * @param {number} opts.maxSeconds - duration before onTimeout fires
+   * @param {(elapsed:number, pct:number)=>void} [opts.onTick] - called ~10x/sec
+   * @param {()=>void} [opts.onTimeout] - called once, when elapsed >= maxSeconds
+   * @param {number} [opts.intervalMs=100]
+   */
+  constructor({ maxSeconds, onTick, onTimeout, intervalMs = 100 }) {
+    this.maxSeconds = maxSeconds;
+    this.onTick = onTick;
+    this.onTimeout = onTimeout;
+    this.intervalMs = intervalMs;
+    this.elapsed = 0;
+    this._interval = null;
+    this._startedAt = null;
+  }
+
+  start() {
+    this.stop();
+    this._startedAt = Date.now();
+    this._interval = setInterval(() => {
+      this.elapsed = (Date.now() - this._startedAt) / 1000;
+      const pct = Math.min(100, (this.elapsed / this.maxSeconds) * 100);
+      if (this.onTick) this.onTick(this.elapsed, pct);
+      if (this.elapsed >= this.maxSeconds) {
+        this.stop();
+        if (this.onTimeout) this.onTimeout();
+      }
+    }, this.intervalMs);
+  }
+
+  stop() {
+    if (this._interval) {
+      clearInterval(this._interval);
+      this._interval = null;
+    }
+  }
+}
