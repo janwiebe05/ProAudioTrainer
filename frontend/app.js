@@ -121,6 +121,7 @@ class App {
       } else {
         this.showOnboarding();
       }
+      this.checkForUpdates(); // fire-and-forget, non-blocking
       return;
     }
     if (TOKEN) {
@@ -143,6 +144,24 @@ class App {
     document.getElementById('login-screen').style.display = 'flex';
     document.getElementById('app-shell').style.display = 'none';
     this.startLoginVU();
+  }
+
+  // Desktop-only: silent check against the endpoint configured in
+  // tauri.conf.json (a GitHub Releases-hosted latest.json, published by
+  // .github/workflows/tauri-build.yml on a tagged release). No-op until a
+  // release actually exists there. Offers to download+install+restart via
+  // a toast rather than blocking startup on a network call.
+  async checkForUpdates() {
+    try {
+      const update = await window.__TAURI__.updater.check();
+      if (!update?.available) return;
+      showToast(`Update ${update.version} verfügbar — lädt im Hintergrund…`, 'info', 4000);
+      await update.downloadAndInstall();
+      showToast('Update installiert. Starte neu…', 'success', 3000);
+      setTimeout(() => window.__TAURI__.process.relaunch(), 1500);
+    } catch (err) {
+      console.warn('Update check failed (non-fatal):', err);
+    }
   }
 
   // Desktop-only: first-launch profile creation. Reuses the login screen's

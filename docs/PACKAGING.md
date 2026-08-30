@@ -74,12 +74,13 @@ Unsigned builds work fine for testing, but:
 
 - **Windows** without an Authenticode signature triggers a SmartScreen
   "unknown publisher" warning. Get a code-signing certificate (OV is
-  cheaper; EV avoids SmartScreen's reputation-building delay), then set
-  the `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-  repo secrets used by the CI workflow (or configure
-  `bundle.windows.certificateThumbprint` in `tauri.conf.json` for local
-  builds against a certificate already installed in the Windows cert
-  store).
+  cheaper; EV avoids SmartScreen's reputation-building delay), then
+  configure `bundle.windows.certificateThumbprint` in `tauri.conf.json`
+  for local builds against a certificate installed in the Windows cert
+  store, or the equivalent Azure Trusted Signing / signtool secrets for
+  CI. (Note: `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD`, mentioned below,
+  are for the *auto-updater*'s signature, not Authenticode — two
+  unrelated signing mechanisms that happen to share "signing" in the name.)
 - **macOS** without a Developer ID signature + notarization is blocked by
   Gatekeeper until the user right-click → *Open*s it once. Real
   distribution needs a paid [Apple Developer Program](https://developer.apple.com/programs/)
@@ -93,7 +94,41 @@ without a scary OS warning in the way.
 
 ## Auto-updates
 
-Not yet configured. Tauri has a built-in updater plugin
-(`tauri-plugin-updater`) that works well once there's a stable release
-channel to point it at — worth adding once the app is further along, not
-before.
+Configured via `tauri-plugin-updater` + `tauri-plugin-process` (for the
+restart-after-install). The app checks `tauri.conf.json`'s
+`plugins.updater.endpoints` on every startup (see `app.js`'s
+`checkForUpdates()`) — pointed at
+`https://github.com/<owner>/<repo>/releases/latest/download/latest.json`,
+the file `tauri-apps/tauri-action` publishes automatically alongside the
+installers when `.github/workflows/tauri-build.yml` runs on a tag push
+(update the owner/repo in that URL if the repo ever moves).
+
+**Before this does anything real, you must generate your own signing
+keypair** — do not reuse a key someone else generated for you, since
+whoever holds the private key can sign arbitrary update payloads your
+users' installs will trust and auto-install:
+
+```bash
+cargo install tauri-cli --version "^2.0" --locked   # if not already installed
+cargo tauri signer generate -w ~/.tauri/proaudiotrainer.key
+```
+
+This prompts for a password (recommended — an unprotected private key is
+one leaked laptop away from being able to push malicious "updates" to
+every install). Then:
+
+1. Copy the printed **public** key into `tauri.conf.json`'s
+   `plugins.updater.pubkey` (replacing the placeholder value there).
+2. Add two **repo secrets** (Settings → Secrets and variables → Actions):
+   `TAURI_SIGNING_PRIVATE_KEY` (the full contents of the private key file)
+   and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the password you set above).
+   `.github/workflows/tauri-build.yml` already reads both.
+3. Push a version tag (e.g. `v0.1.0`) — the workflow builds, signs, and
+   publishes a draft GitHub Release with the installers *and* the signed
+   `latest.json`/`.sig` files the updater endpoint expects.
+
+The placeholder pubkey currently checked into `tauri.conf.json` came from
+a throwaway keypair generated without a password while wiring this up —
+harmless (a public key can't sign anything), but replace it with your own
+before publishing a real release, and never commit the private half
+either way.
