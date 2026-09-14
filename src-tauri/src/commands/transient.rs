@@ -32,12 +32,12 @@ pub fn transient_random_impl(
     let (exercise_id, dry_path, processed_path, exercise) = render_random_exercise(
         library_dir, db, cache_dir, exercises,
         |dry, rng| {
-            let exercise = transient::generate(level, rng);
+            let mut exercise = transient::generate(level, rng);
+            transient::calibrate(dry, &mut exercise);
             let wet = transient::render(dry, &exercise);
             Ok((exercise, wet))
         },
     )?;
-    let preset = transient::preset(exercise.correct_answer);
 
     Ok(TransientRandomResponse {
         exercise_id,
@@ -45,9 +45,9 @@ pub fn transient_random_impl(
         processed_path,
         level: exercise.level,
         options: transient::level_options(exercise.level).to_vec(),
-        attack_ms: preset.attack_ms,
-        ratio: preset.ratio,
-        threshold_db: preset.threshold_db,
+        attack_ms: exercise.params.attack_s * 1000.0,
+        ratio: exercise.params.ratio,
+        threshold_db: exercise.params.threshold_db,
     })
 }
 

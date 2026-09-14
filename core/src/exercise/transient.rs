@@ -43,32 +43,51 @@ pub fn explanation(answer: &str) -> &'static str {
 pub struct TransientExercise {
     pub correct_answer: &'static str,
     pub level: u8,
+    /// The actual compressor params the clip was (or will be) rendered
+    /// against — starts as the static preset from `preset()`, then gets
+    /// overwritten by `calibrate()` once a dry clip is available. Callers
+    /// must read *this* for the answer-reveal display, not call `preset()`
+    /// again — otherwise the reveal shows the static, pre-calibration
+    /// numbers while the audio the student actually heard was rendered
+    /// against the calibrated ones (this is exactly the mismatch that
+    /// motivated storing it on the exercise instead of recomputing it).
+    pub params: DynamicsParams,
+}
+
+fn base_params(answer: &str) -> DynamicsParams {
+    if answer == "klar" {
+        // Intentionally a near-no-op compressor (ratio≈1), matching the
+        // legacy `{ threshold: -60, ratio: 1.0001, attack: 50, release: 250 }`.
+        DynamicsParams { threshold_db: -60.0, ratio: 1.0001, attack_s: 0.05, release_s: 0.25, makeup_db: 0.0 }
+    } else {
+        let p = preset(answer);
+        DynamicsParams { threshold_db: p.threshold_db, ratio: p.ratio, attack_s: p.attack_ms / 1000.0, release_s: 0.25, makeup_db: 0.0 }
+    }
 }
 
 pub fn generate(level: u8, rng: &mut impl Rng) -> TransientExercise {
     let opts = level_options(level);
-    TransientExercise { correct_answer: opts[rng.gen_range(0..opts.len())], level: level.clamp(1, 3) }
+    let correct_answer = opts[rng.gen_range(0..opts.len())];
+    TransientExercise { correct_answer, level: level.clamp(1, 3), params: base_params(correct_answer) }
 }
 
-/// "klar" is intentionally a near-no-op compressor (ratio≈1), matching the
-/// legacy `{ threshold: -60, ratio: 1.0001, attack: 50, release: 250 }`.
-///
-/// Every other answer's threshold is calibrated to the clip's actual level
-/// via `adapt_params_to_signal` (same helper the Dynamics Trainer uses) —
-/// without it, a static -20..-32dB threshold can sit entirely above a quiet
-/// library track's peak, so the compressor never engages and all four
-/// "difficulty" answers sound identical, making the exercise unwinnable
-/// regardless of which track gets picked.
+/// Calibrate `exercise.params` to the clip's actual level (same
+/// `adapt_params_to_signal` helper the Dynamics Trainer uses) — without it,
+/// a static -20..-32dB threshold can sit entirely above a quiet library
+/// track's peak, so the compressor never engages and all four "difficulty"
+/// answers sound identical, making the exercise unwinnable depending on
+/// which track gets picked. "klar" is left untouched — its near-no-op
+/// ratio makes calibration a no-op anyway, and it's meant to stay a fixed
+/// reference point.
+pub fn calibrate(dry: &AudioBuffer, exercise: &mut TransientExercise) {
+    if exercise.correct_answer != "klar" {
+        exercise.params = adapt_params_to_signal(dry, &exercise.params, EffectType::Compressor);
+    }
+}
+
 pub fn render(dry: &AudioBuffer, exercise: &TransientExercise) -> AudioBuffer {
-    let p = preset(exercise.correct_answer);
-    let params = if exercise.correct_answer == "klar" {
-        DynamicsParams { threshold_db: -60.0, ratio: 1.0001, attack_s: 0.05, release_s: 0.25, makeup_db: 0.0 }
-    } else {
-        let base = DynamicsParams { threshold_db: p.threshold_db, ratio: p.ratio, attack_s: p.attack_ms / 1000.0, release_s: 0.25, makeup_db: 0.0 };
-        adapt_params_to_signal(dry, &base, EffectType::Compressor)
-    };
     let mut wet = dry.clone();
-    apply_compressor(&mut wet, &params);
+    apply_compressor(&mut wet, &exercise.params);
     wet
 }
 
@@ -116,7 +135,8 @@ mod tests {
         // tone, not of real program material — so RMS is the metric that
         // actually reflects whether the compressor engaged.)
         let quiet = tone_buffer(48000, 1.0, 0.01); // ~ -43 dBFS RMS
-        let ex = TransientExercise { correct_answer: "mittel gedämpft", level: 3 };
+        let mut ex = TransientExercise { correct_answer: "mittel gedämpft", level: 3, params: base_params("mittel gedämpft") };
+        calibrate(&quiet, &mut ex);
         let wet = render(&quiet, &ex);
         let dry_rms = rms(&quiet.channels[0]);
         let wet_rms = rms(&wet.channels[0]);
@@ -126,7 +146,8 @@ mod tests {
     #[test]
     fn klar_stays_a_near_no_op_regardless_of_signal_level() {
         let quiet = tone_buffer(48000, 1.0, 0.01);
-        let ex = TransientExercise { correct_answer: "klar", level: 1 };
+        let mut ex = TransientExercise { correct_answer: "klar", level: 1, params: base_params("klar") };
+        calibrate(&quiet, &mut ex);
         let wet = render(&quiet, &ex);
         let dry_rms = rms(&quiet.channels[0]);
         let wet_rms = rms(&wet.channels[0]);

@@ -181,42 +181,43 @@ pub fn library_import_shared_folder(folder_path: String, state: tauri::State<App
     Ok(imported as u32)
 }
 
-/// Same ownership rule as `library_delete`: a private track can only be
-/// toggled by its own profile, otherwise any profile could silently
-/// activate/deactivate another profile's private track by id even though
-/// it never shows up in that profile's `library_list`.
+/// Fetches `id`, checked against the active profile: a private track
+/// (owner IS a profile id) may only be touched by that same profile —
+/// without this, any profile could mutate any other profile's private
+/// track by id even though it never shows up in that profile's
+/// `library_list`. Shared tracks (owner IS NULL) pass for everyone: this
+/// install's own local copy of a shared pack isn't a live central resource
+/// other people depend on, so mutating it is ordinary local housekeeping.
+/// Returns `Ok(None)` for an already-gone id — callers treat that as a
+/// no-op, not an error.
+fn require_owned_track(db: &paw_core::store::Store, id: &str, owner: &str) -> Result<Option<Track>, String> {
+    let Some(track) = db.get_track(id).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    if let Some(track_owner) = &track.owner {
+        if track_owner != owner {
+            return Err("Diese Datei gehört einem anderen Profil.".to_string());
+        }
+    }
+    Ok(Some(track))
+}
+
 #[tauri::command]
 pub fn library_toggle_active(id: String, active: bool, state: tauri::State<AppState>) -> Result<(), String> {
     let owner = current_profile_id(&state.db)?;
-    let Some(track) = state.db.get_track(&id).map_err(|e| e.to_string())? else {
-        return Ok(()); // already gone — no-op, not an error
-    };
-    if let Some(track_owner) = &track.owner {
-        if track_owner != &owner {
-            return Err("Diese Datei gehört einem anderen Profil.".to_string());
-        }
+    if require_owned_track(&state.db, &id, &owner)?.is_none() {
+        return Ok(());
     }
     state.db.set_active(&id, active).map_err(|e| e.to_string())
 }
 
-/// Deletes a track's DB row and underlying file. A private track can only
-/// be deleted by its own profile — without this check, any profile could
-/// delete any other profile's private track by id. Shared tracks (owner
-/// IS NULL) can be deleted by any profile: they're this install's own
-/// local copy of a shared pack, not a live central resource other people
-/// depend on, so this is ordinary local housekeeping, not something that
-/// needs protecting the way cross-profile private files do.
+/// Deletes a track's DB row and underlying file.
 #[tauri::command]
 pub fn library_delete(id: String, state: tauri::State<AppState>) -> Result<(), String> {
     let owner = current_profile_id(&state.db)?;
-    let Some(track) = state.db.get_track(&id).map_err(|e| e.to_string())? else {
-        return Ok(()); // already gone — deleting a nonexistent id is a no-op, not an error
+    let Some(track) = require_owned_track(&state.db, &id, &owner)? else {
+        return Ok(());
     };
-    if let Some(track_owner) = &track.owner {
-        if track_owner != &owner {
-            return Err("Diese Datei gehört einem anderen Profil.".to_string());
-        }
-    }
     let _ = std::fs::remove_file(state.library_dir.join(&track.filename));
     state.db.delete_track(&id).map_err(|e| e.to_string())
 }

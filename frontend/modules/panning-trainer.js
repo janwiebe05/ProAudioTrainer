@@ -155,12 +155,16 @@ class PanningTrainer {
   // ─── Exercise loading ─────────────────────────────────────────────────────────
 
   async loadExercise() {
+    // See dynamics-trainer.js's loadExercise() for why this guard and the
+    // phase/setControlsEnabled ordering below matter — same shared pattern,
+    // same bug (a second START click mid-load could race the first).
+    if (this.phase === 'loading') return;
     this.stopAudio();
     this.stopTimer();
     this.hideResult();
+    this.phase = 'loading';
     this.setControlsEnabled(false);
     this.elapsedSeconds = 0;
-    this.phase = 'loading';
     this.setStatus('Lade Übung…', true);
 
     try {
@@ -189,14 +193,16 @@ class PanningTrainer {
     } catch (err) {
       this.setStatus(`Fehler: ${err}`);
       console.error('[PanningTrainer]', err);
+      this.phase = 'idle';
+      this.setControlsEnabled(true);
     }
   }
 
   // ─── Audio playback (DryWetPlayer — see frontend/shared/dry-wet-player.js) ──
 
-  togglePlay() {
+  async togglePlay() {
     if (!this.player) return;
-    this.player.togglePlayback();
+    await this.player.togglePlayback();
     this.isPlaying = this.player.isPlaying;
     this.updatePlayButton();
   }

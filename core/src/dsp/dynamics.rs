@@ -21,7 +21,7 @@ fn db_to_lin(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
 
-fn lin_to_db(lin: f32) -> f32 {
+pub(crate) fn lin_to_db(lin: f32) -> f32 {
     20.0 * lin.max(1e-9).log10()
 }
 

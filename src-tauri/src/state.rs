@@ -29,13 +29,67 @@ pub struct AppState {
     pub eq_match_exercises: Mutex<HashMap<String, eq_match::EqMatchExercise>>,
 }
 
-/// Lightweight seconds-since-epoch timestamp — good enough for display/
-/// ordering, avoids pulling in a chrono/time dependency. Shared by
-/// library.rs, profile.rs and scores.rs (was duplicated in each before).
+/// UTC timestamp in actual ISO-8601 ("2026-09-14T16:39:00Z"), computed by
+/// hand from `SystemTime` to avoid pulling in a chrono/time dependency for
+/// something this small. Shared by library.rs, profile.rs and scores.rs
+/// (was duplicated in each before).
+///
+/// This used to just be `format!("{secs}")` (bare Unix seconds) despite the
+/// name — harmless for ordering (still monotonic, `ORDER BY created_at`
+/// works either way) but `new Date(createdAt)` on a plain digit string
+/// isn't a format JS recognizes, so every date in the frontend (e.g. the
+/// Progress Dashboard's session history) rendered as "Invalid Date"/"—".
 pub fn now_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    format!("{secs}")
+    format_unix_secs_iso(secs)
+}
+
+/// Civil calendar conversion via Howard Hinnant's `civil_from_days`
+/// algorithm (public domain, http://howardhinnant.github.io/date_algorithms.html)
+/// — proleptic Gregorian, correct for any date this app will ever produce.
+fn format_unix_secs_iso(secs: u64) -> String {
+    let days = (secs / 86400) as i64;
+    let time_of_day = secs % 86400;
+    let (hour, minute, second) = (time_of_day / 3600, (time_of_day / 60) % 60, time_of_day % 60);
+
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+#[cfg(test)]
+mod now_iso_tests {
+    use super::format_unix_secs_iso;
+
+    #[test]
+    fn epoch_zero_is_1970_01_01() {
+        assert_eq!(format_unix_secs_iso(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn a_known_timestamp_round_trips_to_the_right_date() {
+        // 2024-01-01T00:00:00Z
+        assert_eq!(format_unix_secs_iso(1_704_067_200), "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn output_is_parseable_by_a_standard_iso8601_reader() {
+        // The whole point of the fix: this must be a format `new Date(...)`
+        // (or any standard ISO-8601 parser) actually recognizes — a bare
+        // digit string like "1704067200" is not.
+        let s = format_unix_secs_iso(1_704_067_200);
+        assert!(s.chars().nth(4) == Some('-') && s.chars().nth(7) == Some('-') && s.contains('T') && s.ends_with('Z'));
+    }
 }
 
 /// Remove and return the exercise for `id`, or the standard not-found

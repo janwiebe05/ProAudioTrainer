@@ -2,7 +2,7 @@
 //! tables carried over verbatim from the legacy JS source).
 
 use crate::buffer::AudioBuffer;
-use crate::dsp::dynamics::{apply_compressor, apply_expander, apply_gate, apply_limiter, DynamicsParams};
+use crate::dsp::dynamics::{apply_compressor, apply_expander, apply_gate, apply_limiter, lin_to_db, DynamicsParams};
 use crate::exercise::common::time_factor_45;
 use rand::Rng;
 use serde::Serialize;
@@ -167,12 +167,12 @@ pub fn adapt_params_to_signal(dry: &AudioBuffer, params: &DynamicsParams, effect
             peak = a;
         }
     }
-    let rms_db = if sum_sq > 0.0 {
-        20.0 * (sum_sq / max_samples as f32).sqrt().log10()
-    } else {
-        -80.0
-    };
-    let peak_db = if peak > 0.0 { 20.0 * peak.log10() } else { -80.0 };
+    // Reuse the shared dB helper (was duplicated inline here with a
+    // weaker floor that only kicked in at *exactly* zero — a vanishingly
+    // small but nonzero sample, e.g. float noise, could still send log10
+    // toward a huge negative number before the final clamp caught it).
+    let rms_db = lin_to_db((sum_sq / max_samples as f32).sqrt());
+    let peak_db = lin_to_db(peak);
     let crest_db = peak_db - rms_db;
 
     let mut p = *params;

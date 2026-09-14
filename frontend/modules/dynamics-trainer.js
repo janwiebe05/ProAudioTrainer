@@ -2,11 +2,11 @@
 
 // The old client-side RMS/peak threshold auto-adaptation (adaptParamsToSignal)
 // no longer applies here: Rust now decides params AND renders the audio in
-// one step, before the client ever sees it. paw-core currently uses static
-// preset ranges without adapting to the clip's actual loudness — a known,
-// pre-existing simplification (the legacy FFmpeg-era backend had the same
-// gap: audioProcessor.js defined adaptThreshold() but never called it).
-// Worth revisiting in paw-core::exercise::dynamics later, not blocking here.
+// one step, before the client ever sees it. paw-core DOES adapt the
+// threshold to the clip's actual measured level (see
+// paw_core::exercise::dynamics::adapt_params_to_signal, called from
+// commands/dynamics.rs before rendering) — the values this module receives
+// and displays are already the calibrated ones, not static preset numbers.
 
 // Which optional sliders are relevant per effect type
 const EFFECT_PARAMS = {
@@ -282,12 +282,21 @@ class DynamicsTrainer {
   // ─── Exercise loading ────────────────────────────────────────────────────────
 
   async loadExercise() {
+    // Without this guard, a second START click while the first
+    // invokeTauri()/loadDryWet() round-trip is still in flight starts a
+    // second concurrent load; both write this.player/this.exercise, so
+    // whichever resolves last "wins" and the round can end up scored
+    // against a mismatched exercise.
+    if (this.phase === 'loading') return;
     this.stopAudio();
     this.stopTimer();
     this.hideResult();
+    // phase flips to 'loading' before setControlsEnabled(false) — that call
+    // hides the START button based on `this.phase !== 'idle'`, so this
+    // order must hold or START stays visible/clickable during the load.
+    this.phase = 'loading';
     this.setControlsEnabled(false);
     this.elapsedSeconds = 0;
-    this.phase = 'loading';
 
     this.setStatus('Lade Übung…', true);
 
@@ -318,14 +327,19 @@ class DynamicsTrainer {
     } catch (err) {
       this.setStatus(`Fehler: ${err}`);
       console.error('[DynamicsTrainer]', err);
+      // Without resetting phase, setControlsEnabled() keeps hiding START
+      // forever (it only shows in 'idle') — a failed round otherwise
+      // leaves the trainer permanently stuck with no way to retry.
+      this.phase = 'idle';
+      this.setControlsEnabled(true);
     }
   }
 
   // ─── Audio playback (DryWetPlayer — see frontend/shared/dry-wet-player.js) ──
 
-  togglePlay() {
+  async togglePlay() {
     if (!this.player) return;
-    this.player.togglePlayback();
+    await this.player.togglePlayback();
     this.isPlaying = this.player.isPlaying;
     this.updatePlayButton();
   }

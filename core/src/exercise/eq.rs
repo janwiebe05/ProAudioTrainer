@@ -60,10 +60,18 @@ pub fn generate(level: u8, freq_min: Option<f32>, freq_max: Option<f32>, rng: &m
     }
 }
 
+/// -2.5dB output compensation, matching the legacy client-side AudioEngine's
+/// fixed `gainCompensation` gain node — without it, a +6..+12dB peaking
+/// boost makes the "EQ on" clip audibly louder than the dry clip, letting a
+/// student identify the EQ state by loudness alone instead of by the actual
+/// frequency-content change the exercise is meant to test.
+const OUTPUT_COMPENSATION_DB: f32 = -2.5;
+
 /// Render dry+processed clip pair. Q=4 matches the prior BiquadFilterNode Q.
 pub fn render(dry: &AudioBuffer, exercise: &EqExercise) -> AudioBuffer {
     let mut wet = dry.clone();
     apply_peaking_eq(&mut wet, exercise.freq, exercise.gain_db, 4.0);
+    wet.apply_gain(10f32.powf(OUTPUT_COMPENSATION_DB / 20.0));
     wet
 }
 
@@ -109,6 +117,35 @@ mod tests {
             assert!(ex.freq.is_finite(), "freq should never be NaN/inf for bad input ({bad_min}, {bad_max})");
             assert!(ex.freq > 0.0);
         }
+    }
+
+    #[test]
+    fn render_applies_the_fixed_output_compensation_to_the_filtered_signal() {
+        // Regression: the legacy client's AudioEngine chained a fixed
+        // -2.5dB gainCompensation node after the EQ filter specifically so
+        // a +6..+12dB peaking boost wouldn't make the "EQ on" clip audibly
+        // louder than "bypass" — letting a student spot the EQ state by
+        // loudness alone instead of by the actual frequency-content change
+        // the exercise is meant to test. The Rust port dropped this
+        // silently, so verify render()'s output is exactly the raw
+        // apply_peaking_eq() result scaled by 10^(-2.5/20) — not equal to
+        // the uncompensated filter output.
+        let mut dry = AudioBuffer::new(48000, 1, 4800);
+        for (i, s) in dry.channels[0].iter_mut().enumerate() {
+            *s = 0.2 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 48000.0).sin();
+        }
+        let ex = EqExercise { freq: 1000.0, gain_db: 12.0, level: 1, freq_min: 200.0, freq_max: 8000.0 };
+
+        let mut uncompensated = dry.clone();
+        crate::dsp::eq::apply_peaking_eq(&mut uncompensated, ex.freq, ex.gain_db, 4.0);
+        let expected_gain = 10f32.powf(-2.5 / 20.0);
+
+        let wet = render(&dry, &ex);
+        for (w, u) in wet.channels[0].iter().zip(uncompensated.channels[0].iter()) {
+            assert!((w - u * expected_gain).abs() < 1e-5, "wet sample should equal the uncompensated filter output scaled by -2.5dB: wet={w} expected={}", u * expected_gain);
+        }
+        // And, redundantly, that render() is NOT just the raw filter output.
+        assert!((wet.peak() - uncompensated.peak()).abs() > 1e-4, "render() must apply output compensation, not just the raw peaking filter");
     }
 
     #[test]

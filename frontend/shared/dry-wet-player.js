@@ -53,6 +53,7 @@ class DryWetPlayer {
     this.wetEnabled = false;
     this.dryBuffer = null;
     this.wetBuffer = null;
+    this.destroyed = false;
   }
 
   async loadDryWet(dryUrl, wetUrl) {
@@ -72,6 +73,12 @@ class DryWetPlayer {
     // resumed it before starting playback, and losing that check meant
     // "play" silently did nothing the first time a user pressed it.
     if (this.ctx.state === 'suspended') await this.ctx.resume();
+    // destroy() can run while the resume() above is still in flight (e.g.
+    // the user navigates away immediately after pressing play) — without
+    // this check we'd create and start new source nodes hooked up to
+    // already-disconnected gain nodes, which then loop forever with no
+    // reference left to ever stop them.
+    if (this.destroyed) return;
     this.drySource = this.ctx.createBufferSource();
     this.drySource.buffer = this.dryBuffer;
     this.drySource.loop = true;
@@ -90,21 +97,29 @@ class DryWetPlayer {
   }
 
   stop() {
+    // Every pre-migration trainer wrapped its equivalent stop()/disconnect()
+    // call in try/catch (an AudioBufferSourceNode can throw, e.g.
+    // InvalidStateError if the context is already 'closed') so one bad
+    // node couldn't abort whatever teardown sequence called stop() — most
+    // importantly destroy(), whose own cleanup (disconnecting the gain
+    // nodes) must still run even if a source node misbehaves.
     if (this.drySource) {
-      this.drySource.stop();
-      this.drySource.disconnect();
+      try { this.drySource.stop(); this.drySource.disconnect(); } catch { /* already stopped/closed */ }
       this.drySource = null;
     }
     if (this.wetSource) {
-      this.wetSource.stop();
-      this.wetSource.disconnect();
+      try { this.wetSource.stop(); this.wetSource.disconnect(); } catch { /* already stopped/closed */ }
       this.wetSource = null;
     }
     this.isPlaying = false;
   }
 
-  togglePlayback() {
-    if (this.isPlaying) { this.stop(); } else { this.play(); }
+  // async: play() can await ctx.resume() before this.isPlaying flips to
+  // true — callers that read player.isPlaying right after calling this
+  // (to update a play/stop button) must await it too, or they'll capture
+  // the pre-resume value and show the wrong button state.
+  async togglePlayback() {
+    if (this.isPlaying) { this.stop(); } else { await this.play(); }
   }
 
   /// enabled=true → processed/wet audible; enabled=false → dry/bypass audible.
@@ -126,6 +141,7 @@ class DryWetPlayer {
   }
 
   destroy() {
+    this.destroyed = true;
     this.stop();
     this.dryGain.disconnect();
     this.wetGain.disconnect();

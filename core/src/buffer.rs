@@ -68,4 +68,13 @@ impl AudioBuffer {
             .flat_map(|c| c.iter())
             .fold(0.0f32, |m, &s| m.max(s.abs()))
     }
+
+    /// Scale every sample by a linear gain factor in place.
+    pub fn apply_gain(&mut self, gain: f32) {
+        for ch in self.channels.iter_mut() {
+            for s in ch.iter_mut() {
+                *s *= gain;
+            }
+        }
+    }
 }
