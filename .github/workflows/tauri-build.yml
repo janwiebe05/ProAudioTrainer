@@ -16,6 +16,14 @@ on:
   push:
     tags: ["v*.*.*"]
 
+# The default GITHUB_TOKEN is read-only unless a repo's default workflow
+# permissions are set to read+write — tauri-action needs contents:write to
+# create the draft release and upload installer/updater assets to it.
+# Declaring it here explicitly means this doesn't depend on that repo-wide
+# setting (Settings → Actions → General → Workflow permissions).
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
