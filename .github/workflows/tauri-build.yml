@@ -98,4 +98,5 @@ jobs:
             target/**/release/bundle/macos/*.app
             target/**/release/bundle/deb/*.deb
             target/**/release/bundle/appimage/*.AppImage
+            target/**/release/bundle/rpm/*.rpm
           if-no-files-found: ignore
