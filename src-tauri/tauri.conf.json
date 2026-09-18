@@ -52,7 +52,7 @@
       "endpoints": [
         "https://github.com/janwiebe05/ProAudioTrainer/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5QThDOENCMjk5NzMwMDEKUldRQk1KY3B5OGlvNlNzeEgyYTNvMXBNNm5TaDlqSTlVaXBKbFIxb1pSRE81RWI1bVJjSzJJMVQK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzODU4NTEyNkUzNjM5OTAKUldTUU9UWnVFb1dGbzRNbFNPZ1l3ZTBjeUhFSlIyMHRZQmRxeW4xOFlCUEtyVzQ0VC91c2hwU3UK",
       "windows": {
         "installMode": "passive"
       }
