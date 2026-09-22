@@ -11,16 +11,12 @@ class ReverbTrainer {
     this.lives     = 3;
     this.phase     = 'idle';
     this.exercise  = null;
-    this.audioBuffer = null;
-    this.source    = null;
-    this.bypassGain    = null;
-    this.processedGain = null;
+    this.player    = null;
     this.isPlaying = false;
     this.abMode    = 'processed';
     this.elapsedSeconds = 0;
     this.timerInterval  = null;
     this.maxTime   = 45;
-    this._irCache  = {};  // cache decoded IR buffers by path
   }
 
   init()    { this.render(); this.bindEvents(); this.setStatus('Bereit. Drücke START um zu beginnen.'); }
@@ -29,7 +25,7 @@ class ReverbTrainer {
     const el = this.container.querySelector('#rev-level');
     if (el) el.textContent = ['I','II','III'][l-1] || l;
   }
-  destroy() { this._destroyed = true; this.stopAudio(); this.stopTimer(); this.container.innerHTML = ''; }
+  destroy() { this._destroyed = true; this.stopAudio(); this.stopTimer(); if (this.player) { this.player.destroy(); this.player = null; } this.container.innerHTML = ''; }
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -138,133 +134,63 @@ class ReverbTrainer {
   // ─── Exercise loading ─────────────────────────────────────────────────────────
 
   async loadExercise() {
+    // See dynamics-trainer.js's loadExercise() for why this guard and the
+    // phase/setControlsEnabled ordering below matter — same shared pattern,
+    // same bug (a second START click mid-load could race the first).
+    if (this.phase === 'loading') return;
     this.stopAudio();
     this.stopTimer();
     this.hideResult();
+    this.phase = 'loading';
     this.setControlsEnabled(false);
     this.elapsedSeconds = 0;
-    this.phase = 'loading';
     this.setStatus('Lade Übung…', true);
 
     try {
-      const exercise = await apiCall('GET', `/reverb/random?level=${this.level}`);
-      this.exercise  = exercise;
+      // Rust core picks a random library track AND a random EchoThief IR,
+      // convolves them via paw-core::dsp::reverb (real FFT convolution —
+      // this replaces the legacy FFmpeg `aconvolve` filter, which never
+      // actually existed in FFmpeg and made the reverb trainer unusable).
+      const exercise = await invokeTauri('reverb_random', { level: this.level });
+      this.exercise = exercise;
       this.renderCategoryButtons(exercise.availableCategories);
 
       this.setStatus('Lade Audio…', true);
-      const token = localStorage.getItem('token');
-      const audioRes = await fetch('/api/library/random', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!audioRes.ok) throw new Error('Keine Audiodatei verfügbar');
-      const fileInfo = await audioRes.json();
-
-      const [audioAB, irAB] = await Promise.all([
-        fetch(`/api/library/${fileInfo.id}/audio`, { headers: { Authorization: `Bearer ${token}` } })
-          .then(r => { if (!r.ok) throw new Error('Audio nicht ladbar'); return r.arrayBuffer(); }),
-        this._loadIR(exercise.irPath),
-      ]);
-
-      const ctx = this.app.getAudioContext();
-      this.audioBuffer = await ctx.decodeAudioData(audioAB);
+      if (!this.player) this.player = new DryWetPlayer(this.app.getAudioContext());
+      else this.player.stop();
+      await this.player.loadDryWet(tauriFileUrl(exercise.dryPath), tauriFileUrl(exercise.processedPath));
       if (this._destroyed) return;
 
-      await this.buildAudioGraph(irAB);
-      this.startPlayback();
+      this.player.play();
+      this.setABMode(this.abMode);
+      this.isPlaying = true;
+      this.updatePlayButton();
+
       this.startTimer();
       this.setControlsEnabled(true);
       this.setStatus('Identifiziere den Raumtyp!');
       this.phase = 'playing';
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       console.error('[ReverbTrainer]', err);
+      this.phase = 'idle';
+      this.setControlsEnabled(true);
     }
   }
 
-  async _loadIR(irPath) {
-    if (this._irCache[irPath]) return this._irCache[irPath];
-    const res = await fetch(irPath);
-    if (!res.ok) throw new Error(`IR nicht ladbar: ${irPath}`);
-    const buf = await res.arrayBuffer();
-    this._irCache[irPath] = buf;
-    return buf;
-  }
+  // ─── Audio playback (DryWetPlayer — see frontend/shared/dry-wet-player.js) ──
 
-  // ─── Audio graph ──────────────────────────────────────────────────────────────
-  // Signal chain:
-  //   source ──┬──► bypassGain ──────────────────────────► destination  (A: dry)
-  //            └──► dryGain ──► convolver ──► wetGain ──► destination  (B: wet)
-  //
-  // ConvolverNode = true convolution reverb (same algorithm as Altiverb/UAD)
-  // wetMix from backend controls dry/wet balance
-
-  async buildAudioGraph(irArrayBuffer) {
-    const ctx = this.app.getAudioContext();
-    const wet = this.exercise.wetMix;
-
-    this.bypassGain    = ctx.createGain();
-    this.bypassGain.gain.value = this.abMode === 'bypass' ? 1 : 0;
-    this.bypassGain.connect(ctx.destination);
-
-    this.processedGain = ctx.createGain();
-    this.processedGain.gain.value = this.abMode === 'processed' ? 1 : 0;
-    this.processedGain.connect(ctx.destination);
-
-    // Decode IR
-    const irBuffer = await ctx.decodeAudioData(irArrayBuffer.slice(0));
-    this._convolver = ctx.createConvolver();
-    this._convolver.normalize = true; // normalize IR so loudness is consistent
-    this._convolver.buffer    = irBuffer;
-
-    // Wet/dry mix within the processed path
-    this._dryGain = ctx.createGain();
-    this._dryGain.gain.value = 1 - wet;
-    this._wetGain = ctx.createGain();
-    this._wetGain.gain.value = wet;
-
-    this._dryGain.connect(this.processedGain);
-    this._convolver.connect(this._wetGain);
-    this._wetGain.connect(this.processedGain);
-    // _effectInput = dry path; source also connects directly to _convolver in startPlayback
-  }
-
-  startPlayback() {
-    const ctx = this.app.getAudioContext();
-    if (ctx.state === 'suspended') ctx.resume();
-
-    this.source = ctx.createBufferSource();
-    this.source.buffer = this.audioBuffer;
-    this.source.loop   = true;
-
-    this.source.connect(this.bypassGain);
-    if (this._dryGain)   this.source.connect(this._dryGain);   // dry portion of processed path
-    if (this._convolver) this.source.connect(this._convolver); // wet (reverb) portion
-
-    this.source.start();
-    this.isPlaying = true;
+  async togglePlay() {
+    if (!this.player) return;
+    await this.player.togglePlayback();
+    this.isPlaying = this.player.isPlaying;
     this.updatePlayButton();
   }
 
   stopAudio() {
-    if (this.source) { try { this.source.stop(); } catch {} this.source = null; }
-    [this.bypassGain, this.processedGain, this._dryGain, this._wetGain].forEach(n => {
-      if (n) { try { n.disconnect(); } catch {} }
-    });
-    if (this._convolver) { try { this._convolver.disconnect(); } catch {} this._convolver = null; }
-    this.bypassGain = this.processedGain = this._dryGain = this._wetGain = null;
-    this._effectInput = null;
+    if (this.player) this.player.stop();
     this.isPlaying = false;
     this.updatePlayButton();
-  }
-
-  togglePlay() {
-    if (this.isPlaying) {
-      this.stopAudio();
-    } else if (this.audioBuffer && this.exercise) {
-      this._loadIR(this.exercise.irPath).then(irAB => {
-        this.buildAudioGraph(irAB).then(() => this.startPlayback());
-      });
-    }
   }
 
   updatePlayButton() {
@@ -276,8 +202,7 @@ class ReverbTrainer {
 
   setABMode(mode) {
     this.abMode = mode;
-    if (this.bypassGain)    this.bypassGain.gain.value    = mode === 'bypass'    ? 1 : 0;
-    if (this.processedGain) this.processedGain.gain.value = mode === 'processed' ? 1 : 0;
+    if (this.player) this.player.setWetMode(mode === 'processed');
     const btn = this.container.querySelector('#rev-btn-ab');
     if (btn) {
       btn.textContent = mode === 'bypass' ? 'A · TROCKEN' : 'B · REVERB';
@@ -286,7 +211,7 @@ class ReverbTrainer {
     }
   }
 
-  // ─── Timer ────────────────────────────────────────────────────────────────────
+  // ─── Timer ────────────────────────────────────────────────────────────────────  // ─── Timer ────────────────────────────────────────────────────────────────────
 
   startTimer() {
     this.stopTimer();
@@ -314,14 +239,18 @@ class ReverbTrainer {
 
     const guessCategory = this.container.querySelector('.dyn-effect-btn.active')?.dataset.cat;
     try {
-      const result = await apiCall('POST', '/reverb/evaluate', {
+      const result = await invokeTauri('reverb_evaluate', {
         exerciseId: this.exercise.exerciseId,
         guessCategory,
         secondsTaken: this.elapsedSeconds,
       });
+      // feedback text built here — reverb_evaluate only returns the
+      // structured fields (correct/score/categoryLabel), same info the
+      // legacy JS route formatted into a string server-side.
+      result.feedback = result.correct ? `Richtig: ${result.categoryLabel}` : `Falsch. Es war: ${result.categoryLabel}`;
       this.applyResult(result);
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       this.phase = 'playing';
       this.setControlsEnabled(true);
     }
@@ -363,7 +292,7 @@ class ReverbTrainer {
     if (this._scoreSubmitted) return;
     this._scoreSubmitted = true;
     this.stopAudio(); this.stopTimer(); this.phase = 'gameover';
-    try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'reverb' }); } catch {}
+    try { await new HighscoreManager().submit(this.score, this.round, this.level, this.streak, 'reverb'); } catch {}
     const overlay = this.container.querySelector('#rev-gameover');
     overlay.style.display = 'flex';
     this.container.querySelector('#rev-final-score').textContent  = this.score;

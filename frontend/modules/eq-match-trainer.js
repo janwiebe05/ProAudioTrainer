@@ -571,17 +571,19 @@ class EQMatchTrainerModule {
     this._setStatus('loading', 'Lade Übung…');
 
     try {
-      const data = await apiCall('GET', `/eq-match/random?level=${this.level}`);
+      // Rust core (paw_core::exercise::eq_match) picks a random library
+      // track and the hidden target curve, but does NOT render any audio —
+      // this trainer is the one exception that stays fully live client-side
+      // (the student continuously adjusts EQ bands and needs instant
+      // feedback), so we just get the track's own unmodified file back.
+      const data = await invokeTauri('eq_match_random', { level: this.level });
       this.exercise = data;
 
       const actx = this.app.getAudioContext();
       if (actx.state === 'suspended') await actx.resume();
       this.audioEngine = new EQMatchAudioEngine(actx);
 
-      const resp = await fetch(data.audioUrl, {
-        headers: { 'Authorization': `Bearer ${TOKEN}` }
-      });
-      const buf = await resp.arrayBuffer();
+      const buf = await (await fetch(tauriFileUrl(data.dryPath))).arrayBuffer();
       await this.audioEngine.loadAudio(buf);
       this.audioEngine.setHiddenBands(data.hiddenBands);
 
@@ -600,7 +602,7 @@ class EQMatchTrainerModule {
       }
 
     } catch (err) {
-      this._setStatus('error', 'Fehler: ' + err.message);
+      this._setStatus('error', 'Fehler: ' + err);
     }
   }
 
@@ -777,14 +779,14 @@ class EQMatchTrainerModule {
     });
 
     try {
-      const result = await apiCall('POST', '/eq-match/evaluate', {
+      const result = await invokeTauri('eq_match_evaluate', {
         exerciseId: this.exercise.exerciseId,
         userBands,
         secondsTaken: this.secondsElapsed,
       });
       this._showResults(result);
     } catch (err) {
-      this._setStatus('error', 'Fehler beim Auswerten: ' + err.message);
+      this._setStatus('error', 'Fehler beim Auswerten: ' + err);
       this.submitted = false;
       document.getElementById('eqm-submit-btn').disabled = false;
     }
@@ -851,7 +853,7 @@ class EQMatchTrainerModule {
     document.getElementById('eqm-next-btn').addEventListener('click', () => this._newRound());
 
     this._setStatus('done', `Ergebnis: ${score} Punkte ${grade}`);
-    apiCall('POST', '/scores', { score, rounds: 1, level: this.exercise?.difficulty || 1, streak: 0, module: 'eq-match' }).catch(() => {});
+    new HighscoreManager().submit(score, 1, this.exercise?.level || 1, 0, 'eq-match').catch(() => {});
   }
 
   _setStatus(type, text) {

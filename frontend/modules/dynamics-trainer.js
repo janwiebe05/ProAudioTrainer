@@ -1,44 +1,12 @@
 'use strict';
 
-// Measure RMS and Peak of AudioBuffer, then set threshold relative to actual
-// signal characteristics — same principle as auto-threshold in iZotope/Waves tools.
-function adaptParamsToSignal(audioBuffer, params, effectType) {
-  const ch         = audioBuffer.getChannelData(0);
-  const maxSamples = Math.min(ch.length, audioBuffer.sampleRate * 3);
-  let sumSq = 0, peak = 0;
-  for (let i = 0; i < maxSamples; i++) {
-    const abs = Math.abs(ch[i]);
-    sumSq += abs * abs;
-    if (abs > peak) peak = abs;
-  }
-  const rmsDb  = sumSq > 0 ? 20 * Math.log10(Math.sqrt(sumSq / maxSamples)) : -80;
-  const peakDb = peak  > 0 ? 20 * Math.log10(peak) : -80;
-  // Crest factor = dynamic range of the material (high = punchy/transient-rich)
-  const crestDb = peakDb - rmsDb; // typically 6–20 dB
-
-  const p = { ...params };
-
-  if (effectType === 'compressor' || effectType === 'limiter') {
-    // Threshold anchored between RMS and Peak — compressor catches transients above RMS
-    // Offset from preset preserves the intended "light/heavy" compression character
-    const presetMid = effectType === 'limiter' ? -6 : -24;
-    const offset    = p.threshold - presetMid;
-    // Anchor: RMS + half the crest factor = sits in the upper dynamic range
-    const anchor    = rmsDb + crestDb * 0.5;
-    p.threshold     = Math.max(-60, Math.min(-1, anchor + offset));
-    p.makeupGain    = 0; // no makeup — students hear raw gain reduction as in real sessions
-  } else {
-    // Gate/Expander: threshold must sit BELOW the signal's average level.
-    // Anchor = RMS - 12dB so the threshold is clearly beneath most of the signal,
-    // meaning only the quietest passages (tails, gaps) get attenuated.
-    const presetMid = -35;
-    const offset    = p.threshold - presetMid;
-    const anchor    = rmsDb - 12;
-    p.threshold     = Math.max(-70, Math.min(-15, anchor + offset));
-  }
-
-  return p;
-}
+// The old client-side RMS/peak threshold auto-adaptation (adaptParamsToSignal)
+// no longer applies here: Rust now decides params AND renders the audio in
+// one step, before the client ever sees it. paw-core DOES adapt the
+// threshold to the clip's actual measured level (see
+// paw_core::exercise::dynamics::adapt_params_to_signal, called from
+// commands/dynamics.rs before rendering) — the values this module receives
+// and displays are already the calibrated ones, not static preset numbers.
 
 // Which optional sliders are relevant per effect type
 const EFFECT_PARAMS = {
@@ -66,13 +34,8 @@ class DynamicsTrainer {
     this.streak = 0;
     this.lives = 3;
     this.phase = 'idle'; // idle | loading | playing | result | gameover
-    // Audio graph nodes
-    this.audioBuffer = null;
-    this.source = null;
-    this.bypassGain = null;
-    this.processedGain = null;
-    this.compressorNode = null;
-    this.makeupGainNode = null;
+    // Audio playback (DryWetPlayer)
+    this.player = null;
     this.isPlaying = false;
     this.abMode = 'processed';
     // Exercise
@@ -101,6 +64,7 @@ class DynamicsTrainer {
     this._destroyed = true;
     this.stopAudio();
     this.stopTimer();
+    if (this.player) { this.player.destroy(); this.player = null; }
     this.container.innerHTML = '';
   }
 
@@ -176,7 +140,7 @@ class DynamicsTrainer {
           <div class="dyn-panel-label">PARAMETER EINSCHÄTZEN</div>
           <div class="dyn-param-row">
             <label class="dyn-param-label">THRESHOLD</label>
-            <input type="range" class="dyn-slider" id="dyn-threshold" min="-60" max="0" step="1" value="-24">
+            <input type="range" class="dyn-slider" id="dyn-threshold" min="-70" max="0" step="1" value="-24">
             <span class="dyn-param-value" id="dyn-threshold-val">-24 dB</span>
           </div>
           <div class="dyn-param-row" id="dyn-row-ratio">
@@ -318,36 +282,42 @@ class DynamicsTrainer {
   // ─── Exercise loading ────────────────────────────────────────────────────────
 
   async loadExercise() {
+    // Without this guard, a second START click while the first
+    // invokeTauri()/loadDryWet() round-trip is still in flight starts a
+    // second concurrent load; both write this.player/this.exercise, so
+    // whichever resolves last "wins" and the round can end up scored
+    // against a mismatched exercise.
+    if (this.phase === 'loading') return;
     this.stopAudio();
     this.stopTimer();
     this.hideResult();
+    // phase flips to 'loading' before setControlsEnabled(false) — that call
+    // hides the START button based on `this.phase !== 'idle'`, so this
+    // order must hold or START stays visible/clickable during the load.
+    this.phase = 'loading';
     this.setControlsEnabled(false);
     this.elapsedSeconds = 0;
-    this.phase = 'loading';
 
     this.setStatus('Lade Übung…', true);
 
     try {
-      const exercise = await apiCall('GET', `/dynamics/random?level=${this.level}`);
+      // Rust core picks a random library track, chooses/renders the effect,
+      // and returns two pre-rendered clips — no more live Tone.js/worklet
+      // graph building on the client.
+      const exercise = await invokeTauri('dynamics_random', { level: this.level });
       this.exercise = exercise;
 
       this.setStatus('Lade Audio…', true);
-      const token = localStorage.getItem('token');
-      const audioRes = await fetch(exercise.audioUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!audioRes.ok) throw new Error('Audio nicht ladbar');
-
-      const arrayBuffer = await audioRes.arrayBuffer();
-      const ctx = this.app.getAudioContext();
-      this.audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      if (!this.player) this.player = new DryWetPlayer(this.app.getAudioContext());
+      else this.player.stop();
+      await this.player.loadDryWet(tauriFileUrl(exercise.dryPath), tauriFileUrl(exercise.processedPath));
       if (this._destroyed) return;
 
-      // Measure RMS of the audio and adapt threshold relative to signal level
-      this.exercise.params = adaptParamsToSignal(this.audioBuffer, this.exercise.params, this.exercise.effectType);
+      this.player.play();
+      this.setABMode(this.abMode);
+      this.isPlaying = true;
+      this.updatePlayButton();
 
-      this.buildAudioGraph();
-      this.startPlayback();
       this.startTimer();
       this.applyGuessMode(exercise.guessMode);
       this.setControlsEnabled(true);
@@ -355,155 +325,29 @@ class DynamicsTrainer {
       this.setStatus(hints[exercise.guessMode] || 'Höre das Audio!');
       this.phase = 'playing';
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       console.error('[DynamicsTrainer]', err);
+      // Without resetting phase, setControlsEnabled() keeps hiding START
+      // forever (it only shows in 'idle') — a failed round otherwise
+      // leaves the trainer permanently stuck with no way to retry.
+      this.phase = 'idle';
+      this.setControlsEnabled(true);
     }
   }
 
-  // ─── Audio graph ─────────────────────────────────────────────────────────────
-//** 
-  async buildAudioGraph() {
-    const ctx = this.app.getAudioContext();
-    const p   = this.exercise.params;
-    const effectType = this.exercise.effectType;
+  // ─── Audio playback (DryWetPlayer — see frontend/shared/dry-wet-player.js) ──
 
-    // Sync Tone.js to our shared AudioContext
-    if (Tone.getContext().rawContext !== ctx) {
-      Tone.setContext(ctx);
-    }
-
-    // ── Shared infrastructure ───────────────────────────────────────────
-    // Bypass path (A): direct to destination
-    this.bypassGain = ctx.createGain();
-    this.bypassGain.gain.value = this.abMode === 'bypass' ? 1 : 0;
-    this.bypassGain.connect(ctx.destination);
-
-    // Processed output gate
-    this.processedGain = ctx.createGain();
-    this.processedGain.gain.value = this.abMode === 'processed' ? 1 : 0;
-    this.processedGain.connect(ctx.destination);
-
-    // ── Effect-specific path ────────────────────────────────────────────
-    switch (effectType) {
-
-      case 'compressor': {
-        // Tone.Compressor wraps DynamicsCompressorNode — true compressor
-        this._toneEffect = new Tone.Compressor({
-          threshold: p.threshold,
-          ratio:     p.ratio,
-          attack:    p.attack   / 1000,
-          release:   p.release  / 1000,
-          knee:      3,
-        });
-        // Makeup gain post-compressor
-        this._toneMakeup = new Tone.Gain(Tone.dbToGain(p.makeupGain));
-        this._toneEffect.connect(this._toneMakeup);
-        this._toneMakeup.connect(this.processedGain);
-        this._effectInput = this._toneEffect.input;
-        break;
-      }
-
-      case 'limiter': {
-        // Limiter = Compressor with ratio 20:1 (≈ ∞), fast attack, hard knee
-        this._toneEffect = new Tone.Compressor({
-          threshold: p.threshold,
-          ratio:     20,
-          attack:    p.attack   / 1000,
-          release:   p.release  / 1000,
-          knee:      0,
-        });
-        this._toneMakeup = new Tone.Gain(Tone.dbToGain(p.makeupGain));
-        this._toneEffect.connect(this._toneMakeup);
-        this._toneMakeup.connect(this.processedGain);
-        this._effectInput = this._toneEffect.input;
-        break;
-      }
-
-      case 'gate': {
-        // AudioWorklet gate — true noise gate with threshold, ratio, attack, release
-        if (!this._gateWorkletLoaded) {
-          await ctx.audioWorklet.addModule('/worklets/gate-processor.js');
-          this._gateWorkletLoaded = true;
-        }
-        this._workletNode = new AudioWorkletNode(ctx, 'gate-processor');
-        this._workletNode.parameters.get('threshold').value = p.threshold;
-        this._workletNode.parameters.get('ratio').value     = p.ratio;
-        this._workletNode.parameters.get('attack').value    = p.attack   / 1000;
-        this._workletNode.parameters.get('release').value   = p.release  / 1000;
-        this._workletNode.connect(this.processedGain);
-        this._effectInput = this._workletNode;
-        break;
-      }
-
-      case 'expander': {
-        // AudioWorklet downward expander — no Tone.js equivalent
-        if (!this._workletLoaded) {
-          await ctx.audioWorklet.addModule('/worklets/expander-processor.js');
-          this._workletLoaded = true;
-        }
-        this._workletNode = new AudioWorkletNode(ctx, 'expander-processor');
-        this._workletNode.parameters.get('threshold').value = p.threshold;
-        this._workletNode.parameters.get('ratio').value     = p.ratio;
-        this._workletNode.parameters.get('attack').value    = p.attack   / 1000;
-        this._workletNode.parameters.get('release').value   = p.release  / 1000;
-        this._workletNode.connect(this.processedGain);
-        this._effectInput = this._workletNode; // native AudioNode
-        break;
-      }
-    }
-  }
-
-  startPlayback() {
-    const ctx = this.app.getAudioContext();
-    if (ctx.state === 'suspended') ctx.resume();
-
-    this.source = ctx.createBufferSource();
-    this.source.buffer = this.audioBuffer;
-    this.source.loop   = true;
-
-    // Bypass path (A)
-    this.source.connect(this.bypassGain);
-
-    // Processed path (B) — connect to correct effect input type
-    if (this._effectInput instanceof AudioNode) {
-      this.source.connect(this._effectInput);          // AudioWorklet (expander)
-    } else if (this._effectInput) {
-      this.source.connect(this._effectInput);          // Tone.js input (AudioNode under the hood)
-    }
-
-    this.source.start();
-    this.isPlaying = true;
+  async togglePlay() {
+    if (!this.player) return;
+    await this.player.togglePlayback();
+    this.isPlaying = this.player.isPlaying;
     this.updatePlayButton();
   }
 
   stopAudio() {
-    if (this.source) {
-      try { this.source.stop(); } catch {}
-      this.source = null;
-    }
-    // Disconnect native gain nodes
-    [this.bypassGain, this.processedGain].forEach(node => {
-      if (node) { try { node.disconnect(); } catch {} }
-    });
-    // Dispose Tone.js nodes
-    if (this._toneEffect) { try { this._toneEffect.dispose(); } catch {} this._toneEffect = null; }
-    if (this._toneMakeup) { try { this._toneMakeup.dispose(); } catch {} this._toneMakeup = null; }
-    // Disconnect AudioWorklet node
-    if (this._workletNode) { try { this._workletNode.disconnect(); } catch {} this._workletNode = null; }
-
-    this.bypassGain = this.processedGain = null;
-    this._effectInput = null;
+    if (this.player) this.player.stop();
     this.isPlaying = false;
     this.updatePlayButton();
-  }
-
-  togglePlay() {
-    if (this.isPlaying) {
-      this.stopAudio();
-    } else if (this.audioBuffer) {
-      this.buildAudioGraph();
-      this.startPlayback();
-    }
   }
 
   updatePlayButton() {
@@ -517,8 +361,7 @@ class DynamicsTrainer {
 
   setABMode(mode) {
     this.abMode = mode;
-    if (this.bypassGain)    this.bypassGain.gain.value    = mode === 'bypass'    ? 1 : 0;
-    if (this.processedGain) this.processedGain.gain.value = mode === 'processed' ? 1 : 0;
+    if (this.player) this.player.setWetMode(mode === 'processed');
 
     const btn = this.container.querySelector('#dyn-btn-ab');
     if (btn) {
@@ -604,21 +447,78 @@ class DynamicsTrainer {
     };
   }
 
+  // Feedback text is built here rather than in Rust: the exercise's actual
+  // effect/params are already known client-side (dynamics_random reveals
+  // them up front, same as the legacy JS route did) so there is no reason
+  // to round-trip formatted strings — dynamics_evaluate just returns the
+  // score and whether the effect type was guessed correctly.
+  buildFeedback(guesses, typeCorrect) {
+    const typeLabels = { compressor: 'COMPRESSOR', limiter: 'LIMITER', gate: 'GATE', expander: 'EXPANDER' };
+    const ex = this.exercise;
+    const feedback = {
+      type: typeCorrect ? `Richtig: ${typeLabels[ex.effect]}` : `Falsch. Es war: ${typeLabels[ex.effect]}`,
+    };
+
+    if (ex.guessMode === 'type-amount') {
+      const amountCorrect = guesses.guessAmount === ex.amountIndex;
+      feedback.amount = amountCorrect
+        ? `Stärke korrekt: ${ex.amountLabels[ex.amountIndex]}`
+        : `Stärke: du hast ${ex.amountLabels[guesses.guessAmount] ?? '?'} gewählt, richtig wäre ${ex.amountLabels[ex.amountIndex]}`;
+    } else if (ex.guessMode === 'type-params') {
+      const fmt = {
+        threshold: v => `${v} dB`, ratio: v => `${v}:1`, attack: v => `${v} ms`,
+        release: v => `${v} ms`, makeupGain: v => `+${v} dB`,
+      };
+      const correctVals = {
+        threshold: ex.thresholdDb, ratio: ex.ratio, attack: ex.attackMs,
+        release: ex.releaseMs, makeupGain: ex.makeupDb,
+      };
+      const evalParamsByEffect = {
+        compressor: ['threshold', 'ratio', 'attack', 'release', 'makeupGain'],
+        limiter:    ['threshold', 'attack', 'release', 'makeupGain'],
+        gate:       ['threshold', 'ratio', 'attack', 'release'],
+        expander:   ['threshold', 'ratio', 'attack', 'release'],
+      };
+      const guessMap = {
+        threshold: guesses.guessThreshold, ratio: guesses.guessRatio,
+        attack: guesses.guessAttack, release: guesses.guessRelease, makeupGain: guesses.guessGain,
+      };
+      for (const key of evalParamsByEffect[ex.effect] || evalParamsByEffect.compressor) {
+        const g = guessMap[key];
+        if (g == null) continue;
+        feedback[key] = `Richtig: ${fmt[key](correctVals[key])}  |  Dein Wert: ${fmt[key](g)}`;
+      }
+    }
+    return feedback;
+  }
+
   async submitAnswer() {
     if (this.phase !== 'playing' || !this.exercise) return;
     this.phase = 'result';
     this.stopTimer();
     this.setControlsEnabled(false);
 
+    const guesses = this.getGuesses();
     try {
-      const result = await apiCall('POST', '/dynamics/evaluate', {
-        ...this.getGuesses(),
-        exerciseId:   this.exercise.exerciseId,
-        secondsTaken: this.elapsedSeconds,
+      const evalResult = await invokeTauri('dynamics_evaluate', {
+        exerciseId:     this.exercise.exerciseId,
+        guessEffect:    guesses.guessType,
+        guessAmount:    guesses.guessAmount,
+        guessThreshold: guesses.guessThreshold,
+        guessRatio:     guesses.guessRatio,
+        guessAttackMs:  guesses.guessAttack,
+        guessReleaseMs: guesses.guessRelease,
+        guessMakeupDb:  guesses.guessGain,
+        secondsTaken:   this.elapsedSeconds,
       });
-      this.applyResult(result);
+      this.applyResult({
+        score: evalResult.score,
+        typeCorrect: evalResult.typeCorrect,
+        effectType: this.exercise.effect,
+        feedback: this.buildFeedback(guesses, evalResult.typeCorrect),
+      });
     } catch (err) {
-      this.setStatus(`Fehler: ${err.message}`);
+      this.setStatus(`Fehler: ${err}`);
       this.phase = 'playing';
       this.setControlsEnabled(true);
     }
@@ -686,7 +586,7 @@ class DynamicsTrainer {
     this.phase = 'gameover';
 
     try {
-      await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'dynamics' });
+      await new HighscoreManager().submit(this.score, this.round, this.level, this.streak, 'dynamics');
     } catch {}
 
     const overlay = this.container.querySelector('#dyn-gameover');

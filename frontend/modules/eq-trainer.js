@@ -15,7 +15,6 @@ class GameState {
     this.lastResult = null;
     this.sessionScore = 0;
     this.roundStartTime = null;
-    this.currentAudioFile = null;
   }
 
   getToleranceOctaves() {
@@ -23,37 +22,10 @@ class GameState {
     return tol[this.level] || 0.25;
   }
 
-  checkGuess(targetFreq, guessFreq) {
-    const octaveDist = Math.abs(Math.log2(guessFreq / targetFreq));
-    const tolerance = this.getToleranceOctaves();
-    const hit = octaveDist <= tolerance;
-    const secondsTaken = (Date.now() - this.roundStartTime) / 1000;
-    let points = 0;
-
-    if (hit) {
-      const maxPoints = 1000;
-      const maxTime = 10;
-      const timeFactor = Math.max(0, 1 - (secondsTaken / maxTime));
-      const precisionFactor = 1 - (octaveDist / tolerance);
-      points = Math.round(maxPoints * timeFactor * precisionFactor);
-      points = Math.max(0, points);
-      if (this.streak >= 3) points += Math.round(points * 0.1);
-      this.streak++;
-    } else {
-      this.streak = 0;
-    }
-
-    return { hit, octaveDist, points, secondsTaken };
-  }
-
-  getRandomTargetFreq(freqMin = 20, freqMax = 20000) {
-    // True random on log scale within the user-defined range
-    const logMin = Math.log2(freqMin);
-    const logMax = Math.log2(freqMax);
-    const logFreq = logMin + Math.random() * (logMax - logMin);
-    // Round to nearest musically meaningful value (semitone grid)
-    return Math.round(Math.pow(2, Math.round(logFreq * 12) / 12));
-  }
+  // Target-frequency generation and guess scoring both moved server-side to
+  // paw-core::exercise::eq (Rust) — see DryWetPlayer/startNewRound/submitGuess
+  // below — so the target frequency is never known client-side until the
+  // eq_evaluate response reveals it.
 
   reset() {
     this.lives = 3;
@@ -178,106 +150,8 @@ class FrequencyScale {
   }
 }
 
-// ─── Audio Engine ─────────────────────────────────────────────────────────────
-class AudioEngine {
-  constructor(audioContext) {
-    this.ctx = audioContext;
-    this.sourceNode = null;
-    this.dryGain = this.ctx.createGain();
-    this.wetGain = this.ctx.createGain();
-    this.biquadFilter = this.ctx.createBiquadFilter();
-    this.gainCompensation = this.ctx.createGain();
-    this.masterGain = this.ctx.createGain();
-    this.analyser = this.ctx.createAnalyser();
-
-    this.dryGain.gain.value = 1.0;
-    this.wetGain.gain.value = 0.0;
-    this.gainCompensation.gain.value = Math.pow(10, -2.5 / 20);
-    this.masterGain.gain.value = 0.85;
-    this.analyser.fftSize = 2048;
-    this.analyser.smoothingTimeConstant = 0.8;
-
-    this.biquadFilter.type = 'peaking';
-    this.biquadFilter.Q.value = 4.0;   // narrow enough to be clearly audible
-    this.biquadFilter.gain.value = 12; // +12 dB — unmistakable peak
-
-    // Main audio graph: dry + wet paths → masterGain → analyser → destination
-    this.dryGain.connect(this.masterGain);
-    this.wetGain.connect(this.biquadFilter);
-    this.biquadFilter.connect(this.gainCompensation);
-    this.gainCompensation.connect(this.masterGain);
-    this.masterGain.connect(this.analyser);
-    this.analyser.connect(this.ctx.destination);
-
-    this.isPlaying = false;
-    this.eqEnabled = false;
-  }
-
-  async loadAudioBuffer(arrayBuffer) {
-    return new Promise((resolve, reject) => {
-      this.ctx.decodeAudioData(arrayBuffer, (buf) => {
-        this.audioBuffer = buf;
-        resolve(buf);
-      }, reject);
-    });
-  }
-
-  play() {
-    if (!this.audioBuffer) return;
-    if (this.isPlaying) this.stop();
-    this.sourceNode = this.ctx.createBufferSource();
-    this.sourceNode.buffer = this.audioBuffer;
-    this.sourceNode.loop = true;
-    this.sourceNode.connect(this.dryGain);
-    this.sourceNode.connect(this.wetGain);
-    this.sourceNode.start(0);
-    this.isPlaying = true;
-  }
-
-  stop() {
-    if (this.sourceNode) {
-      this.sourceNode.stop();
-      this.sourceNode.disconnect();
-      this.sourceNode = null;
-    }
-    this.isPlaying = false;
-  }
-
-  togglePlayback() {
-    if (this.isPlaying) { this.stop(); } else { this.play(); }
-  }
-
-  setEQMode(enabled) {
-    const now = this.ctx.currentTime;
-    const fade = 0.020;
-    this.dryGain.gain.cancelScheduledValues(now);
-    this.wetGain.gain.cancelScheduledValues(now);
-    this.dryGain.gain.setValueAtTime(this.dryGain.gain.value, now);
-    this.wetGain.gain.setValueAtTime(this.wetGain.gain.value, now);
-    if (enabled) {
-      this.dryGain.gain.linearRampToValueAtTime(0, now + fade);
-      this.wetGain.gain.linearRampToValueAtTime(1, now + fade);
-    } else {
-      this.dryGain.gain.linearRampToValueAtTime(1, now + fade);
-      this.wetGain.gain.linearRampToValueAtTime(0, now + fade);
-    }
-    this.eqEnabled = enabled;
-  }
-
-  setEQFrequency(freq) {
-    this.biquadFilter.frequency.setValueAtTime(freq, this.ctx.currentTime);
-  }
-
-  destroy() {
-    this.stop();
-    this.dryGain.disconnect();
-    this.wetGain.disconnect();
-    this.biquadFilter.disconnect();
-    this.gainCompensation.disconnect();
-    this.masterGain.disconnect();
-    this.analyser.disconnect();
-  }
-}
+// Audio engine: see frontend/shared/dry-wet-player.js (DryWetPlayer,
+// invokeTauri, tauriFileUrl) — loaded before this file in index.html.
 
 // ─── EQ Trainer Module ────────────────────────────────────────────────────────
 class EQTrainerModule {
@@ -295,6 +169,7 @@ class EQTrainerModule {
     this._keyHandler = null;
     this.freqRangeMin = parseInt(localStorage.getItem('freqRangeMin') || '100');
     this.freqRangeMax = parseInt(localStorage.getItem('freqRangeMax') || '8000');
+    this.currentExerciseId = null; // set by startNewRound(), consumed by submitGuess()
   }
 
   init() {
@@ -501,42 +376,44 @@ class EQTrainerModule {
     if (loadingEl) loadingEl.style.display = 'block';
 
     try {
-      const fileInfo = await apiCall('GET', '/library/random');
-      this.gameState.currentAudioFile = fileInfo;
+      // Rust core picks a random library track, renders dry + EQ'd clips,
+      // and keeps the target frequency secret until we call eq_evaluate.
+      const exercise = await invokeTauri('eq_random', {
+        level: this.gameState.level,
+        freqMin: this.freqRangeMin,
+        freqMax: this.freqRangeMax,
+      });
+      this.currentExerciseId = exercise.exerciseId;
 
       const statusEl = this.container.querySelector('#status-text');
       if (statusEl) statusEl.textContent = 'Lade Audio…';
 
-      const audioRes = await fetch(`/api/library/${fileInfo.id}/audio`, {
-        headers: { 'Authorization': `Bearer ${TOKEN}` }
-      });
-      if (!audioRes.ok) throw new Error('Audio-Download fehlgeschlagen');
-      const arrayBuffer = await audioRes.arrayBuffer();
-
       if (!this.audioEngine) {
-        this.audioEngine = new AudioEngine(this.app.getAudioContext());
+        this.audioEngine = new DryWetPlayer(this.app.getAudioContext());
       } else {
         this.audioEngine.stop();
       }
 
-      await this.audioEngine.loadAudioBuffer(arrayBuffer);
+      await this.audioEngine.loadDryWet(
+        tauriFileUrl(exercise.dryPath),
+        tauriFileUrl(exercise.processedPath)
+      );
 
       this.gameState.round++;
-      this.gameState.targetFreq = this.gameState.getRandomTargetFreq(this.freqRangeMin, this.freqRangeMax);
+      this.gameState.targetFreq = null; // unknown client-side until evaluate
       this.gameState.guessFreq = null;
       this.gameState.lastResult = null;
       this.gameState.roundStartTime = null;
 
       this.audioEngine.play();
       this.selectBypass();
-      this.audioEngine.setEQFrequency(this.gameState.targetFreq);
 
       if (loadingEl) loadingEl.style.display = 'none';
       this.enterGuessing();
 
     } catch (err) {
       if (loadingEl) loadingEl.style.display = 'none';
-      showToast(`Fehler beim Laden: ${err.message}`, 'error');
+      showToast(`Fehler beim Laden: ${err}`, 'error');
       const statusEl = this.container.querySelector('#status-text');
       if (statusEl) statusEl.textContent = 'Fehler. Bitte Sound Library befüllen und erneut versuchen.';
       this.gameState.phase = 'idle';
@@ -564,20 +441,47 @@ class EQTrainerModule {
     }, 100);
   }
 
-  submitGuess(x) {
+  async submitGuess(x) {
     if (this.timerInterval) clearInterval(this.timerInterval);
 
-    this.gameState.guessFreq = this.freqScale.xToFreq(x);
+    const guessFreq = this.freqScale.xToFreq(x);
+    const secondsTaken = (Date.now() - this.gameState.roundStartTime) / 1000;
+    this.gameState.guessFreq = guessFreq;
     this.gameState.phase = 'revealed';
 
-    const result = this.gameState.checkGuess(this.gameState.targetFreq, this.gameState.guessFreq);
+    // Scoring is authoritative in the Rust core (paw-core::exercise::eq) —
+    // the target frequency was never sent to the client, so this call also
+    // reveals it for the first time.
+    let evalResult;
+    try {
+      evalResult = await invokeTauri('eq_evaluate', {
+        exerciseId: this.currentExerciseId,
+        guessFreq,
+        secondsTaken,
+      });
+    } catch (err) {
+      showToast(`Auswertung fehlgeschlagen: ${err}`, 'error');
+      this.gameState.phase = 'guessing';
+      this.updateUI();
+      return;
+    }
+
+    this.gameState.targetFreq = evalResult.correctFreq;
+    let points = evalResult.points;
+    // Preserve the streak-bonus UX from the original client-only version.
+    if (evalResult.hit && this.gameState.streak >= 3) {
+      points += Math.round(points * 0.1);
+    }
+    const result = { hit: evalResult.hit, octaveDist: evalResult.octaveDist, points, secondsTaken };
     this.gameState.lastResult = result;
 
     if (result.hit) {
+      this.gameState.streak++;
       this.gameState.score += result.points;
       this.gameState.sessionScore += result.points;
       this.showResult(true, result);
     } else {
+      this.gameState.streak = 0;
       this.gameState.lives--;
       this.showResult(false, result);
       if (this.gameState.lives <= 0) {
@@ -676,21 +580,21 @@ class EQTrainerModule {
 
   selectBypass() {
     if (!this.audioEngine) return;
-    this.audioEngine.setEQMode(false);
+    this.audioEngine.setWetMode(false);
     const btn = this.container.querySelector('#btn-ab-toggle');
     if (btn) { btn.textContent = 'A / BYPASS'; btn.classList.remove('active-eq'); }
   }
 
   selectEQ() {
     if (!this.audioEngine) return;
-    this.audioEngine.setEQMode(true);
+    this.audioEngine.setWetMode(true);
     const btn = this.container.querySelector('#btn-ab-toggle');
     if (btn) { btn.textContent = 'B / EQ ON'; btn.classList.add('active-eq'); }
   }
 
   toggleAB() {
     if (!this.audioEngine) return;
-    if (this.audioEngine.eqEnabled) { this.selectBypass(); } else { this.selectEQ(); }
+    if (this.audioEngine.wetEnabled) { this.selectBypass(); } else { this.selectEQ(); }
   }
 
   togglePlayback() {

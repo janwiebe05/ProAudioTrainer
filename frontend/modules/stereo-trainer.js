@@ -11,9 +11,8 @@ class StereoTrainer {
     this.lives = 3;
     this.phase = 'idle';
     this.exercise = null;
-    this.audioBuffer = null;
     this.audioCtx = null;
-    this.source = null;
+    this.player = null;
     this.isPlaying = false;
     this.abMode = 'processed'; // 'processed' | 'original'
     this.roundStartTime = null;
@@ -39,6 +38,7 @@ class StereoTrainer {
     this._destroyed = true;
     this.stopAudio();
     this.stopTimer();
+    if (this.player) { this.player.destroy(); this.player = null; }
     this.container.innerHTML = '';
   }
 
@@ -156,18 +156,15 @@ class StereoTrainer {
     this.container.querySelector('#st-ab-btn').disabled = true;
 
     try {
-      const res = await fetch(`/api/stereo/random?level=${this.level}`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-      });
-      if (!res.ok) throw new Error(await res.text());
-      this.exercise = await res.json();
+      // Rust core picks a random library track and renders the M/S width
+      // clip via paw-core::dsp::stereo_width (1:1 port of the old
+      // ms-width-processor.js worklet formula).
+      this.exercise = await invokeTauri('stereo_random', { level: this.level });
 
-      const audioRes = await fetch(this.exercise.audioUrl, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-      });
-      const arrayBuffer = await audioRes.arrayBuffer();
       if (!this.audioCtx) this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      this.audioBuffer = await this.audioCtx.decodeAudioData(arrayBuffer);
+      if (!this.player) this.player = new DryWetPlayer(this.audioCtx);
+      else this.player.stop();
+      await this.player.loadDryWet(tauriFileUrl(this.exercise.dryPath), tauriFileUrl(this.exercise.processedPath));
 
       this.phase = 'playing';
       this.abMode = 'processed';
@@ -182,7 +179,7 @@ class StereoTrainer {
       this.playAudio();
     } catch (err) {
       this.setLoading(false);
-      this.setStatus('Fehler: ' + err.message);
+      this.setStatus('Fehler: ' + err);
       this.phase = 'idle';
     }
   }
@@ -205,12 +202,9 @@ class StereoTrainer {
     const secondsTaken = Math.round((Date.now() - this.roundStartTime) / 1000);
 
     try {
-      const res = await fetch('/api/stereo/evaluate', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ exerciseId: this.exercise.exerciseId, answer, secondsTaken }),
+      const data = await invokeTauri('stereo_evaluate', {
+        exerciseId: this.exercise.exerciseId, answer, secondsTaken,
       });
-      const data = await res.json();
 
       this.score += data.points || 0;
       this.round += 1;
@@ -232,7 +226,7 @@ class StereoTrainer {
         this._scoreSubmitted = true;
         this.phase = 'gameover';
         this.setStatus('GAME OVER');
-        try { await apiCall('POST', '/scores', { score: this.score, rounds: this.round, level: this.level, streak: this.streak, module: 'stereo' }); } catch {}
+        try { await new HighscoreManager().submit(this.score, this.round, this.level, this.streak, 'stereo'); } catch {}
         // Zeige Gameover-Overlay
         const overlay = this.container.querySelector('#st-gameover');
         if (overlay) {
@@ -242,7 +236,7 @@ class StereoTrainer {
         }
       }
     } catch (err) {
-      this.setStatus('Fehler: ' + err.message);
+      this.setStatus('Fehler: ' + err);
       this.phase = 'idle';
     }
   }
@@ -278,94 +272,18 @@ class StereoTrainer {
     this.updateHUD();
   }
 
-  // ─── Audio ──────────────────────────────────────────────────────────────────
-
-  createStereoWidthNode(ctx, width) {
-    // Mid/Side processing: width 0 = mono, width 1 = original
-    const splitter = ctx.createChannelSplitter(2);
-    const merger = ctx.createChannelMerger(2);
-
-    // We'll use a ScriptProcessor-free approach via gain nodes
-    // L_out = Mid + Side*width, R_out = Mid - Side*width
-    // Mid = (L+R)/2, Side = (L-R)/2
-    // Implemented as: output = Mid + Side * width
-    // Since Web Audio doesn't have subtract natively, we invert with gain -1
-
-    const midL = ctx.createGain(); // L -> mid
-    const midR = ctx.createGain(); // R -> mid
-    const sideL = ctx.createGain(); // L -> side
-    const sideR = ctx.createGain(); // R -> side (inverted)
-
-    midL.gain.value = 0.5;
-    midR.gain.value = 0.5;
-    sideL.gain.value = 0.5 * width;
-    sideR.gain.value = -0.5 * width;
-
-    // Output gains
-    const outL = ctx.createGain();
-    const outR = ctx.createGain();
-
-    // Mid bus (shared)
-    const midBus = ctx.createGain();
-    midBus.gain.value = 1;
-
-    // Route: splitter -> mid/side gains -> merger
-    splitter.connect(midL); // L -> midL
-    splitter.connect(midR, 1); // R -> midR
-    splitter.connect(sideL); // L -> sideL
-    splitter.connect(sideR, 1); // R -> sideR (inverted)
-
-    // L output = midL + midR + sideL + sideR
-    midL.connect(merger, 0, 0);
-    midR.connect(merger, 0, 0);
-    sideL.connect(merger, 0, 0);
-    sideR.connect(merger, 0, 0);
-
-    // R output = midL + midR - sideL - sideR (flip side signs)
-    const sideL2 = ctx.createGain();
-    const sideR2 = ctx.createGain();
-    sideL2.gain.value = -0.5 * width;
-    sideR2.gain.value = 0.5 * width;
-    splitter.connect(sideL2);
-    splitter.connect(sideR2, 1);
-
-    midL.connect(merger, 0, 1);
-    midR.connect(merger, 0, 1);
-    sideL2.connect(merger, 0, 1);
-    sideR2.connect(merger, 0, 1);
-
-    return { input: splitter, output: merger };
-  }
+  // ─── Audio (DryWetPlayer — see frontend/shared/dry-wet-player.js) ───────────
 
   playAudio() {
-    if (!this.audioBuffer || !this.audioCtx) return;
-    this.stopAudio();
-    if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
-
-    const source = this.audioCtx.createBufferSource();
-    source.buffer = this.audioBuffer;
-    source.loop = true;
-
-    if (this.abMode === 'original') {
-      source.connect(this.audioCtx.destination);
-    } else {
-      const width = this.exercise ? this.exercise.width : 1.0;
-      const widthNode = this.createStereoWidthNode(this.audioCtx, width);
-      source.connect(widthNode.input);
-      widthNode.output.connect(this.audioCtx.destination);
-    }
-
-    source.start();
-    this.source = source;
+    if (!this.player) return;
+    this.player.play();
+    this.player.setWetMode(this.abMode === 'processed');
     this.isPlaying = true;
     this.container.querySelector('#st-play-btn').textContent = '■ STOP';
   }
 
   stopAudio() {
-    if (this.source) {
-      try { this.source.stop(); } catch (e) {}
-      this.source = null;
-    }
+    if (this.player) this.player.stop();
     this.isPlaying = false;
     const btn = this.container.querySelector('#st-play-btn');
     if (btn) btn.textContent = '▶ PLAY';
@@ -380,10 +298,10 @@ class StereoTrainer {
     this.abMode = this.abMode === 'processed' ? 'original' : 'processed';
     const btn = this.container.querySelector('#st-ab-btn');
     if (btn) btn.textContent = `A/B: ${this.abMode === 'processed' ? 'PROCESSED' : 'ORIGINAL'}`;
-    if (this.isPlaying) { this.stopAudio(); this.playAudio(); }
+    if (this.player) this.player.setWetMode(this.abMode === 'processed');
   }
 
-  // ─── Timer ──────────────────────────────────────────────────────────────────
+    // ─── Timer ──────────────────────────────────────────────────────────────────
 
   startTimer() {
     this.elapsedSeconds = 0;

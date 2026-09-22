@@ -10,29 +10,30 @@ class SoundLibraryModule {
 
   init() {
     this.render();
-    this.setupEventListeners();
     this.loadLibrary();
   }
 
   render() {
-    const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
-    const uploadLabel = isAdmin
-      ? 'Zur geteilten Bibliothek hinzufügen'
-      : 'Zu meiner Bibliothek hinzufügen';
-
     this.container.innerHTML = `
       <div class="sound-library">
         <div class="lib-header">
           <h2>Sound Library</h2>
-          <p>Upload and manage audio files for EQ training</p>
+          <p>Verwalte Audiodateien für das Training — deine eigenen und geteilte.</p>
         </div>
 
         <div class="lib-upload-zone" id="upload-zone">
-          <input type="file" id="lib-file-input" accept=".wav,.mp3,.ogg,.flac,.aiff,.aif,.m4a" multiple style="display:none">
           <div class="upload-inner">
             <div class="upload-icon">⬇</div>
-            <p class="upload-text">${this.escape(uploadLabel)}</p>
-            <p class="upload-sub">Drag files here or click to select — Supports WAV, MP3, OGG, FLAC, AIFF, M4A</p>
+            <p class="upload-text">Zu meiner Bibliothek hinzufügen</p>
+            <p class="upload-sub">Klicken zum Auswählen — WAV, MP3, OGG, FLAC, AIFF, M4A</p>
+          </div>
+        </div>
+
+        <div class="lib-upload-zone" id="import-shared-zone" style="margin-top:8px;">
+          <div class="upload-inner">
+            <div class="upload-icon">⇱</div>
+            <p class="upload-text">Geteilten Ordner importieren</p>
+            <p class="upload-sub">Für Ordner, die z.B. von der Schule bereitgestellt wurden — für alle Profile auf diesem Rechner sichtbar</p>
           </div>
         </div>
 
@@ -55,65 +56,59 @@ class SoundLibraryModule {
       </div>
     `;
 
-    const uploadZone = this.container.querySelector('#upload-zone');
-    const fileInput = this.container.querySelector('#lib-file-input');
-
-    uploadZone.addEventListener('click', () => fileInput.click());
-    uploadZone.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      uploadZone.classList.add('drag-over');
-    });
-    uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
-    uploadZone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      uploadZone.classList.remove('drag-over');
-      this.handleFiles(e.dataTransfer.files);
-    });
-
-    fileInput.addEventListener('change', (e) => {
-      this.handleFiles(e.target.files);
-      e.target.value = '';
-    });
-  }
-
-  setupEventListeners() {
+    this.container.querySelector('#upload-zone').addEventListener('click', () => this.pickFiles());
+    this.container.querySelector('#import-shared-zone').addEventListener('click', () => this.pickSharedFolder());
   }
 
   async loadLibrary() {
     try {
-      this.library = await apiCall('GET', '/library');
+      this.library = await invokeTauri('library_list');
       this.renderLibraryList();
     } catch (err) {
-      showToast(`Error loading library: ${err.message}`, 'error');
+      showToast(`Fehler beim Laden der Bibliothek: ${err}`, 'error');
     }
   }
 
-  async handleFiles(files) {
-    if (!files || files.length === 0) return;
-
-    const formData = new FormData();
-    for (const file of files) {
-      formData.append('files', file);
-    }
-
-    this.uploading = true;
+  async pickFiles() {
+    if (this.uploading) return;
     try {
-      const res = await fetch('/api/library/upload', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${TOKEN}` },
-        body: formData
+      const selected = await window.__TAURI__.dialog.open({
+        multiple: true,
+        filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'ogg', 'flac', 'aiff', 'aif', 'm4a'] }],
       });
+      if (!selected) return; // user cancelled
+      const paths = Array.isArray(selected) ? selected : [selected];
+      await this.handleFiles(paths);
+    } catch (err) {
+      showToast(`Dateiauswahl fehlgeschlagen: ${err}`, 'error');
+    }
+  }
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Upload failed');
-      }
-
-      const data = await res.json();
-      showToast(`${data.uploaded} file(s) uploaded`, 'success');
+  async pickSharedFolder() {
+    if (this.uploading) return;
+    try {
+      const selected = await window.__TAURI__.dialog.open({ directory: true, multiple: false });
+      if (!selected) return; // user cancelled
+      this.uploading = true;
+      const imported = await invokeTauri('library_import_shared_folder', { folderPath: selected });
+      showToast(`${imported} geteilte Datei(en) importiert`, 'success');
       await this.loadLibrary();
     } catch (err) {
-      showToast(`Upload error: ${err.message}`, 'error');
+      showToast(`Import fehlgeschlagen: ${err}`, 'error');
+    } finally {
+      this.uploading = false;
+    }
+  }
+
+  async handleFiles(paths) {
+    if (!paths || paths.length === 0) return;
+    this.uploading = true;
+    try {
+      const imported = await invokeTauri('library_upload', { paths });
+      showToast(`${imported} Datei(en) importiert`, 'success');
+      await this.loadLibrary();
+    } catch (err) {
+      showToast(`Import-Fehler: ${err}`, 'error');
     } finally {
       this.uploading = false;
     }
@@ -125,9 +120,6 @@ class SoundLibraryModule {
     const activeEl = this.container.querySelector('#stat-active');
     const sizeEl = this.container.querySelector('#stat-size');
 
-    const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
-    const currentUsername = CURRENT_USER && CURRENT_USER.username;
-
     countEl.textContent = this.library.length;
     activeEl.textContent = this.library.filter(f => f.active).length;
 
@@ -136,22 +128,14 @@ class SoundLibraryModule {
     sizeEl.textContent = (totalSize / (1024 * 1024)).toFixed(1) + ' MB';
 
     if (this.library.length === 0) {
-      listEl.innerHTML = '<div class="lib-empty">No files yet. Upload some audio files!</div>';
+      listEl.innerHTML = '<div class="lib-empty">Noch keine Dateien. Lade Audiodateien hoch!</div>';
       return;
     }
 
     listEl.innerHTML = this.library.map(file => {
-      // Ownership badge
-      const isShared = file.ownerId === null;
-      const isOwner = file.ownerId === currentUsername;
+      const isShared = file.owner === null || file.owner === undefined;
       const badgeClass = isShared ? 'badge-shared' : 'badge-mine';
-      const badgeLabel = isShared ? 'Shared' : 'Meine Bibliothek';
-
-      // Delete button: visible for admin OR owner of private file
-      const canDelete = isAdmin || isOwner;
-      const deleteBtn = canDelete
-        ? `<button class="btn-rack btn-rack--sm btn-delete" data-id="${file.id}">DELETE</button>`
-        : '';
+      const badgeLabel = isShared ? 'Geteilt' : 'Meine Bibliothek';
 
       return `
         <div class="lib-file-item">
@@ -163,7 +147,6 @@ class SoundLibraryModule {
             <div class="file-meta">
               <span class="file-size">${(file.size / 1024 / 1024).toFixed(1)} MB</span>
               <span class="file-duration">${file.duration ? (file.duration / 60).toFixed(1) + ' min' : '—'}</span>
-              <span class="file-date">${new Date(file.uploadedAt).toLocaleDateString('de-DE')}</span>
             </div>
           </div>
           <div class="file-actions">
@@ -171,21 +154,18 @@ class SoundLibraryModule {
             <button class="btn-rack btn-rack--sm btn-toggle-active ${file.active ? 'active' : ''}" data-id="${file.id}">
               ${file.active ? 'ACTIVE' : 'INACTIVE'}
             </button>
-            ${deleteBtn}
+            <button class="btn-rack btn-rack--sm btn-delete" data-id="${file.id}">DELETE</button>
           </div>
         </div>
       `;
     }).join('');
 
-    // Event listeners für die Buttons
     listEl.querySelectorAll('.btn-play').forEach(btn => {
       btn.addEventListener('click', () => this.previewFile(btn.dataset.id));
     });
-
     listEl.querySelectorAll('.btn-toggle-active').forEach(btn => {
       btn.addEventListener('click', () => this.toggleActive(btn.dataset.id, btn));
     });
-
     listEl.querySelectorAll('.btn-delete').forEach(btn => {
       btn.addEventListener('click', () => this.deleteFile(btn.dataset.id));
     });
@@ -199,54 +179,48 @@ class SoundLibraryModule {
 
   async previewFile(fileId) {
     try {
-      const res = await fetch(`/api/library/${fileId}/audio`, {
-        headers: { 'Authorization': `Bearer ${TOKEN}` }
-      });
-      if (!res.ok) throw new Error('Download failed');
-
-      const buffer = await res.arrayBuffer();
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const decoded = await new Promise((resolve, reject) => {
-        ctx.decodeAudioData(buffer, resolve, reject);
-      });
+      const file = this.library.find(f => f.id === fileId);
+      if (!file) return;
+      const ctx = this.app.getAudioContext();
+      const decoded = await fetchAndDecode(ctx, tauriFileUrl(file.path));
 
       const source = ctx.createBufferSource();
       source.buffer = decoded;
       source.connect(ctx.destination);
       source.start(0);
-
-      showToast('Playing preview...', 'info', 2000);
+      showToast('Vorschau spielt…', 'info', 2000);
     } catch (err) {
-      showToast(`Playback error: ${err.message}`, 'error');
+      showToast(`Wiedergabefehler: ${err}`, 'error');
     }
   }
 
   async toggleActive(fileId, btn) {
     try {
-      const file = await apiCall('PATCH', `/library/${fileId}/active`);
-      btn.classList.toggle('active', file.active);
-      btn.textContent = file.active ? 'ACTIVE' : 'INACTIVE';
-      showToast(file.active ? 'File activated' : 'File deactivated', 'info', 2000);
+      const file = this.library.find(f => f.id === fileId);
+      if (!file) return;
+      const newActive = !file.active;
+      await invokeTauri('library_toggle_active', { id: fileId, active: newActive });
+      file.active = newActive;
+      btn.classList.toggle('active', newActive);
+      btn.textContent = newActive ? 'ACTIVE' : 'INACTIVE';
+      showToast(newActive ? 'Datei aktiviert' : 'Datei deaktiviert', 'info', 2000);
     } catch (err) {
-      showToast(`Error: ${err.message}`, 'error');
+      showToast(`Fehler: ${err}`, 'error');
     }
   }
 
   async deleteFile(fileId) {
-    if (!confirm('Delete this file?')) return;
-
+    if (!confirm('Diese Datei löschen?')) return;
     try {
-      await apiCall('DELETE', `/library/${fileId}`);
+      await invokeTauri('library_delete', { id: fileId });
       await this.loadLibrary();
-      showToast('File deleted', 'success');
+      showToast('Datei gelöscht', 'success');
     } catch (err) {
-      showToast(`Delete error: ${err.message}`, 'error');
+      showToast(`Löschfehler: ${err}`, 'error');
     }
   }
 
-  destroy() {
-  }
+  destroy() {}
 }
 
 registerModule('sound-library', SoundLibraryModule);
-
