@@ -6,6 +6,8 @@ class SoundLibraryModule {
     this.container = container;
     this.library = [];
     this.uploading = false;
+    this.previewSource = null;
+    this.previewingId = null;
   }
 
   init() {
@@ -161,7 +163,7 @@ class SoundLibraryModule {
     }).join('');
 
     listEl.querySelectorAll('.btn-play').forEach(btn => {
-      btn.addEventListener('click', () => this.previewFile(btn.dataset.id));
+      btn.addEventListener('click', () => this.previewFile(btn.dataset.id, btn));
     });
     listEl.querySelectorAll('.btn-toggle-active').forEach(btn => {
       btn.addEventListener('click', () => this.toggleActive(btn.dataset.id, btn));
@@ -177,7 +179,28 @@ class SoundLibraryModule {
     return div.innerHTML;
   }
 
-  async previewFile(fileId) {
+  /// Stops the currently playing preview, if any. Called before starting a
+  /// new preview, when the same file's button is clicked again, and from
+  /// destroy() — previously nothing tracked the preview source at all, so
+  /// switching away from the Sound Library module (or to a different file)
+  /// left the previous preview playing indefinitely in the background.
+  stopPreview() {
+    if (this.previewSource) {
+      try { this.previewSource.stop(); this.previewSource.disconnect(); } catch { /* already stopped */ }
+      this.previewSource = null;
+    }
+    if (this.previewingId) {
+      const prevBtn = this.container.querySelector(`.btn-play[data-id="${this.previewingId}"]`);
+      if (prevBtn) prevBtn.textContent = 'PLAY';
+      this.previewingId = null;
+    }
+  }
+
+  async previewFile(fileId, btn) {
+    const wasPlayingThisFile = this.previewingId === fileId;
+    this.stopPreview();
+    if (wasPlayingThisFile) return; // clicking PLAY/STOP on the playing file just stops it
+
     try {
       const file = this.library.find(f => f.id === fileId);
       if (!file) return;
@@ -187,7 +210,11 @@ class SoundLibraryModule {
       const source = ctx.createBufferSource();
       source.buffer = decoded;
       source.connect(ctx.destination);
+      source.onended = () => { if (this.previewingId === fileId) this.stopPreview(); };
       source.start(0);
+      this.previewSource = source;
+      this.previewingId = fileId;
+      if (btn) btn.textContent = 'STOP';
       showToast('Vorschau spielt…', 'info', 2000);
     } catch (err) {
       showToast(`Wiedergabefehler: ${err}`, 'error');
@@ -220,7 +247,9 @@ class SoundLibraryModule {
     }
   }
 
-  destroy() {}
+  destroy() {
+    this.stopPreview();
+  }
 }
 
 registerModule('sound-library', SoundLibraryModule);

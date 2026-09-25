@@ -1,9 +1,17 @@
 //! EQ Trainer — port of backend/src/routes/eq.js.
+//!
+//! `generate()` picks the target frequency via `pick_audible_frequency()`,
+//! which runs a quick FFT over the picked library clip so the boost lands
+//! somewhere the track actually has energy — a plain log-uniform pick could
+//! otherwise target a band the specific clip is nearly silent in (e.g. 6kHz
+//! on an upright-bass-and-vocals recording), making the exercise's boost
+//! inaudible no matter how carefully the student listens.
 
 use crate::buffer::AudioBuffer;
 use crate::dsp::eq::apply_peaking_eq;
 use crate::exercise::common::time_factor_10;
 use rand::Rng;
+use rustfft::{num_complex::Complex32, FftPlanner};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy)]
@@ -31,6 +39,87 @@ pub fn random_frequency(freq_min: f32, freq_max: f32, rng: &mut impl Rng) -> f32
     (2f32.powf((log_freq * 12.0).round() / 12.0)).round()
 }
 
+fn quantize_to_semitone(freq: f32) -> f32 {
+    (2f32.powf((freq.log2() * 12.0).round() / 12.0)).round()
+}
+
+/// Magnitude spectrum of `mono` (bins 0..=fft_len/2, DC to Nyquist), plus
+/// the FFT length used — needed by callers to convert a bin index back to
+/// Hz. Only a rough single-window analysis (no overlap-add, no windowing
+/// function beyond the implicit rectangular one) — this exists to steer
+/// which frequency gets picked for the exercise, not to measure levels
+/// precisely, so the extra complexity of a proper STFT isn't worth it here.
+fn magnitude_spectrum(mono: &[f32], sample_rate: u32) -> (Vec<f32>, usize) {
+    // Cap the analysis window — a few seconds is plenty to tell "present"
+    // from "absent" in a frequency band, and keeps the FFT cheap even for
+    // a full ~20s clip.
+    let n = mono.len().min(sample_rate as usize * 4).next_power_of_two().max(1024);
+    let mut buf: Vec<Complex32> = (0..n).map(|i| Complex32::new(mono.get(i).copied().unwrap_or(0.0), 0.0)).collect();
+    let mut planner = FftPlanner::new();
+    let fft = planner.plan_fft_forward(n);
+    fft.process(&mut buf);
+    let magnitudes = buf[..=n / 2].iter().map(|c| c.norm()).collect();
+    (magnitudes, n)
+}
+
+/// Summed squared magnitude in a third-octave-wide band centered on `freq`
+/// — a rough but cheap stand-in for "how much energy does the signal
+/// actually have around this frequency".
+fn energy_near(spectrum: &[f32], sample_rate: u32, fft_len: usize, freq: f32) -> f32 {
+    let bin_hz = sample_rate as f32 / fft_len as f32;
+    let lo = ((freq / 2f32.powf(1.0 / 6.0)) / bin_hz).floor().max(0.0) as usize;
+    let hi = (((freq * 2f32.powf(1.0 / 6.0)) / bin_hz).ceil() as usize).min(spectrum.len().saturating_sub(1));
+    spectrum[lo..=hi.max(lo)].iter().map(|m| m * m).sum()
+}
+
+/// Picks a target frequency for the exercise that the clip actually has
+/// audible content at — a plain log-uniform pick (the old behaviour, still
+/// used as the fallback below) can land in a band the specific library
+/// track has little or no energy in (e.g. targeting 6kHz on a track that's
+/// mostly upright bass and vocals), making the boost inaudible or barely
+/// perceptible no matter how well the student listens.
+///
+/// Approach: scan the allowed range to find the strongest band as a
+/// reference level, then keep drawing ordinary log-uniform candidates
+/// (preserving the original random distribution/difficulty character)
+/// until one has at least `MIN_RELATIVE_ENERGY` of that reference's energy.
+/// Falls back to the reference band itself if every draw misses (a very
+/// sparse spectrum), and to a plain random pick on total silence (nothing
+/// to analyze either way).
+fn pick_audible_frequency(dry: &AudioBuffer, freq_min: f32, freq_max: f32, rng: &mut impl Rng) -> f32 {
+    let mono = dry.to_mono();
+    if mono.iter().all(|s| *s == 0.0) {
+        return random_frequency(freq_min, freq_max, rng);
+    }
+    let (spectrum, fft_len) = magnitude_spectrum(&mono, dry.sample_rate);
+
+    const SCAN_STEPS: u32 = 48;
+    let mut best_energy = 0.0f32;
+    let mut best_freq = (freq_min * freq_max).sqrt(); // geometric-mean fallback, always in range
+    for i in 0..=SCAN_STEPS {
+        let t = i as f32 / SCAN_STEPS as f32;
+        let f = freq_min * (freq_max / freq_min).powf(t);
+        let e = energy_near(&spectrum, dry.sample_rate, fft_len, f);
+        if e > best_energy {
+            best_energy = e;
+            best_freq = f;
+        }
+    }
+    if best_energy <= 0.0 {
+        return random_frequency(freq_min, freq_max, rng);
+    }
+
+    const MIN_RELATIVE_ENERGY: f32 = 0.12;
+    const MAX_ATTEMPTS: u32 = 20;
+    for _ in 0..MAX_ATTEMPTS {
+        let candidate = random_frequency(freq_min, freq_max, rng);
+        if energy_near(&spectrum, dry.sample_rate, fft_len, candidate) >= best_energy * MIN_RELATIVE_ENERGY {
+            return candidate;
+        }
+    }
+    quantize_to_semitone(best_freq)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct EqExercise {
     pub freq: f32,
@@ -40,7 +129,7 @@ pub struct EqExercise {
     pub freq_max: f32,
 }
 
-pub fn generate(level: u8, freq_min: Option<f32>, freq_max: Option<f32>, rng: &mut impl Rng) -> EqExercise {
+pub fn generate(level: u8, freq_min: Option<f32>, freq_max: Option<f32>, dry: &AudioBuffer, rng: &mut impl Rng) -> EqExercise {
     let cfg = level_config(level);
     // Guard against bad input (e.g. a corrupted localStorage value on the
     // client): freq_min<=0 sends log2() to -inf, and freq_min>=freq_max
@@ -52,7 +141,7 @@ pub fn generate(level: u8, freq_min: Option<f32>, freq_max: Option<f32>, rng: &m
         _ => (cfg.freq_min, cfg.freq_max),
     };
     EqExercise {
-        freq: random_frequency(freq_min, freq_max, rng),
+        freq: pick_audible_frequency(dry, freq_min, freq_max, rng),
         gain_db: cfg.gain_db,
         level: level.clamp(1, 3),
         freq_min,
@@ -109,13 +198,53 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
 
+    fn tone_buffer(sample_rate: u32, seconds: f32, freq_hz: f32, amp: f32) -> AudioBuffer {
+        let n = (sample_rate as f32 * seconds) as usize;
+        let mut b = AudioBuffer::new(sample_rate, 1, n);
+        for (i, s) in b.channels[0].iter_mut().enumerate() {
+            *s = amp * (2.0 * std::f32::consts::PI * freq_hz * i as f32 / sample_rate as f32).sin();
+        }
+        b
+    }
+
     #[test]
     fn invalid_freq_range_falls_back_to_level_default_instead_of_nan() {
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let silence = AudioBuffer::new(48000, 1, 48000);
         for (bad_min, bad_max) in [(0.0, 8000.0), (-100.0, 8000.0), (5000.0, 100.0), (1000.0, 1000.0)] {
-            let ex = generate(2, Some(bad_min), Some(bad_max), &mut rng);
+            let ex = generate(2, Some(bad_min), Some(bad_max), &silence, &mut rng);
             assert!(ex.freq.is_finite(), "freq should never be NaN/inf for bad input ({bad_min}, {bad_max})");
             assert!(ex.freq > 0.0);
+        }
+    }
+
+    #[test]
+    fn generate_prefers_a_frequency_the_clip_actually_has_energy_at() {
+        // A near-pure 2kHz tone with almost nothing else in the spectrum —
+        // any target far from 2kHz would be effectively inaudible once
+        // boosted. Run many rounds and check the overwhelming majority
+        // land close to the one place there's real signal.
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(2);
+        let dry = tone_buffer(48000, 3.0, 2000.0, 0.5);
+        let mut near_tone = 0;
+        let total = 40;
+        for _ in 0..total {
+            let ex = generate(1, Some(100.0), Some(12000.0), &dry, &mut rng);
+            // within +/- 1 octave of the tone counts as "found the energy"
+            if (ex.freq / 2000.0).log2().abs() <= 1.0 {
+                near_tone += 1;
+            }
+        }
+        assert!(near_tone as f32 / total as f32 >= 0.9, "{near_tone}/{total} picks landed near the only audible frequency");
+    }
+
+    #[test]
+    fn generate_still_returns_a_finite_frequency_on_pure_silence() {
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(3);
+        let silence = AudioBuffer::new(48000, 1, 48000);
+        for _ in 0..20 {
+            let ex = generate(2, Some(100.0), Some(12000.0), &silence, &mut rng);
+            assert!(ex.freq.is_finite() && ex.freq >= 100.0 && ex.freq <= 12000.0);
         }
     }
 

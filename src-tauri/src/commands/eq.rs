@@ -34,7 +34,7 @@ pub fn eq_random_impl(
     let (exercise_id, dry_path, processed_path, exercise) = render_random_exercise(
         library_dir, db, cache_dir, exercises,
         |dry, rng| {
-            let exercise = eq::generate(level, freq_min, freq_max, rng);
+            let exercise = eq::generate(level, freq_min, freq_max, dry, rng);
             let wet = eq::render(dry, &exercise);
             Ok((exercise, wet))
         },

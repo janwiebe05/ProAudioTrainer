@@ -213,6 +213,7 @@ class EQTrainerModule {
         </div>
 
         <div class="ab-controls">
+          <button class="btn-rack btn-rack--ab" id="btn-play-toggle">▶ PLAY / STOP</button>
           <button class="btn-rack btn-rack--ab" id="btn-ab-toggle">A / BYPASS</button>
         </div>
 
@@ -289,6 +290,8 @@ class EQTrainerModule {
   }
 
   setupEventListeners() {
+    this.container.querySelector('#btn-play-toggle').addEventListener('click', () => this.togglePlayback());
+
     // Single A/B toggle button
     this.container.querySelector('#btn-ab-toggle').addEventListener('click', () => this.toggleAB());
 
@@ -406,6 +409,7 @@ class EQTrainerModule {
       this.gameState.roundStartTime = null;
 
       this.audioEngine.play();
+      this.updatePlayButton();
       this.selectBypass();
 
       if (loadingEl) loadingEl.style.display = 'none';
@@ -491,6 +495,19 @@ class EQTrainerModule {
     }
 
     this.updateUI();
+    this.scheduleAutoNextRound();
+  }
+
+  /// Auto-advances to the next round a couple seconds after a result is
+  /// shown, so a full training session doesn't require a NEXT ROUND click
+  /// after every single guess — the manual button still works too, for
+  /// anyone who wants to move on immediately or re-read the result first.
+  scheduleAutoNextRound() {
+    if (this._autoNextTimer) clearTimeout(this._autoNextTimer);
+    this._autoNextTimer = setTimeout(() => {
+      this._autoNextTimer = null;
+      if (this.gameState.phase === 'revealed') this.nextRound();
+    }, 2500);
   }
 
   showResult(hit, result) {
@@ -536,6 +553,7 @@ class EQTrainerModule {
   }
 
   nextRound() {
+    if (this._autoNextTimer) { clearTimeout(this._autoNextTimer); this._autoNextTimer = null; }
     const panel = this.container.querySelector('#result-panel');
     if (panel) panel.style.display = 'none';
     this.startNewRound(); // auto-enters guessing after loading
@@ -544,7 +562,9 @@ class EQTrainerModule {
   endGame() {
     this.gameState.phase = 'gameover';
     if (this.audioEngine) this.audioEngine.stop();
+    this.updatePlayButton();
     if (this.timerInterval) clearInterval(this.timerInterval);
+    if (this._autoNextTimer) { clearTimeout(this._autoNextTimer); this._autoNextTimer = null; }
 
     this.hsManager.submit(this.gameState.sessionScore, this.gameState.round, this.gameState.level, this.gameState.streak, 'eq')
       .then(() => this.hsManager.renderTo('highscore-list'));
@@ -562,6 +582,7 @@ class EQTrainerModule {
   restartGame() {
     this.gameState.reset();
     if (this.timerInterval) clearInterval(this.timerInterval);
+    if (this._autoNextTimer) { clearTimeout(this._autoNextTimer); this._autoNextTimer = null; }
     this.roundTimer = 0;
     const overlay = this.container.querySelector('#gameover-overlay');
     if (overlay) overlay.style.display = 'none';
@@ -597,9 +618,15 @@ class EQTrainerModule {
     if (this.audioEngine.wetEnabled) { this.selectBypass(); } else { this.selectEQ(); }
   }
 
-  togglePlayback() {
+  async togglePlayback() {
     if (!this.audioEngine) return;
-    this.audioEngine.togglePlayback();
+    await this.audioEngine.togglePlayback();
+    this.updatePlayButton();
+  }
+
+  updatePlayButton() {
+    const btn = this.container.querySelector('#btn-play-toggle');
+    if (btn) btn.textContent = (this.audioEngine && this.audioEngine.isPlaying) ? '■ STOP' : '▶ PLAY / STOP';
   }
 
   updateUI() {
@@ -651,6 +678,7 @@ class EQTrainerModule {
   destroy() {
     if (this.rafId) cancelAnimationFrame(this.rafId);
     if (this.timerInterval) clearInterval(this.timerInterval);
+    if (this._autoNextTimer) { clearTimeout(this._autoNextTimer); this._autoNextTimer = null; }
     if (this._keyHandler) {
       document.removeEventListener('keydown', this._keyHandler);
       this._keyHandler = null;
