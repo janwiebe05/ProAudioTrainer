@@ -25,6 +25,7 @@ class StereoTrainer {
   init() {
     this.render();
     this.bindEvents();
+    this._uninstallShortcuts = installTrainerShortcuts(this.container, { play: '#st-play-btn', ab: '#st-ab-btn', primary: ['#st-start-btn', '#st-next-btn'], answers: '.answer-btn' });
     this.setStatus('Bereit. Drücke START um zu beginnen.');
   }
 
@@ -36,6 +37,7 @@ class StereoTrainer {
 
   destroy() {
     this._destroyed = true;
+    if (this._uninstallShortcuts) this._uninstallShortcuts();
     this.stopAudio();
     this.stopTimer();
     if (this.player) { this.player.destroy(); this.player = null; }
@@ -212,7 +214,7 @@ class StereoTrainer {
         this.streak += 1;
       } else {
         this.streak = 0;
-        this.lives = Math.max(0, this.lives - 1);
+        if (!AppSettings.practiceMode) this.lives = Math.max(0, this.lives - 1);
       }
 
       this.updateHUD();

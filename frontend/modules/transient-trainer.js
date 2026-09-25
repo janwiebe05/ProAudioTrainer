@@ -25,6 +25,7 @@ class TransientTrainer {
   init() {
     this.render();
     this.bindEvents();
+    this._uninstallShortcuts = installTrainerShortcuts(this.container, { play: '#tr-play-btn', ab: '#tr-ab-btn', primary: ['#tr-start-btn', '#tr-next-btn'], answers: '.answer-btn' });
     this.setStatus('Bereit. Drücke START um zu beginnen.');
   }
 
@@ -36,6 +37,7 @@ class TransientTrainer {
 
   destroy() {
     this._destroyed = true;
+    if (this._uninstallShortcuts) this._uninstallShortcuts();
     this.stopAudio();
     this.stopTimer();
     if (this.player) { this.player.destroy(); this.player = null; }
@@ -217,7 +219,7 @@ class TransientTrainer {
         this.streak += 1;
       } else {
         this.streak = 0;
-        this.lives = Math.max(0, this.lives - 1);
+        if (!AppSettings.practiceMode) this.lives = Math.max(0, this.lives - 1);
       }
 
       this.updateHUD();

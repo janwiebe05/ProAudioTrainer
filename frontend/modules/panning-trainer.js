@@ -20,9 +20,14 @@ class PanningTrainer {
     this._destroyed = false;
   }
 
-  init()      { this.render(); this.bindEvents(); this.setStatus('Bereit. Drücke START um zu beginnen.'); }
+  init() {
+    this.render();
+    this.bindEvents();
+    this._uninstallShortcuts = installTrainerShortcuts(this.container, { play: '#pan-btn-play', ab: '#pan-btn-ab', primary: ['#pan-btn-start', '#pan-btn-submit', '#pan-btn-next'], skip: ['#pan-btn-skip'], answers: '.dyn-effect-btn' });
+    this.setStatus('Bereit. Drücke START um zu beginnen.');
+  }
   setLevel(l) { this.level = l; const el = this.container.querySelector('#pan-level'); if (el) el.textContent = ['I','II','III'][l-1] || l; }
-  destroy()   { this._destroyed = true; this.stopAudio(); this.stopTimer(); if (this.player) { this.player.destroy(); this.player = null; } this.container.innerHTML = ''; }
+  destroy()   { this._destroyed = true; if (this._uninstallShortcuts) this._uninstallShortcuts(); this.stopAudio(); this.stopTimer(); if (this.player) { this.player.destroy(); this.player = null; } this.container.innerHTML = ''; }
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -348,7 +353,7 @@ class PanningTrainer {
     const { score, correct, feedback } = data;
     this.round++;
     this.score += score;
-    if (correct) { this.streak++; } else { this.streak = 0; this.lives--; }
+    if (correct) { this.streak++; } else { this.streak = 0; if (!AppSettings.practiceMode) this.lives--; }
     this.updateHUD();
 
     const resultEl = this.container.querySelector('#pan-result');
@@ -370,7 +375,7 @@ class PanningTrainer {
   nextRound()  { if (this.lives <= 0) { this.showGameOver(); return; } this.loadExercise(); }
 
   skipRound() {
-    this.lives--; this.streak = 0; this.updateHUD();
+    if (!AppSettings.practiceMode) this.lives--; this.streak = 0; this.updateHUD();
     if (this.lives <= 0) { this.stopAudio(); this.stopTimer(); this.showGameOver(); }
     else this.loadExercise();
   }

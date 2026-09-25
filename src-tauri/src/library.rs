@@ -11,6 +11,7 @@ use paw_core::decode;
 use paw_core::store::Track;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use tauri::Emitter;
 
 const ALLOWED_EXTENSIONS: &[&str] = &["mp3", "wav", "flac", "ogg", "aiff", "aif", "m4a", "aac"];
 /// Generous but bounded — a single lossless track rarely exceeds a few
@@ -25,6 +26,35 @@ pub struct LibraryTrackDto {
     /// Absolute filesystem path, ready for tauriFileUrl() on the frontend —
     /// callers shouldn't need to know library_dir to play a preview.
     pub path: String,
+}
+
+/// Emitted as the `library-import-progress` event while a batch import runs,
+/// so the Sound Library can show "12 / 48" instead of a silent wait.
+#[derive(Clone, Serialize)]
+struct ImportProgress {
+    done: usize,
+    total: usize,
+}
+
+/// Imports each file in turn and reports progress after every one (also
+/// once up front, so a bar appears immediately for a big folder). A failed
+/// emit only means the UI misses an update — never worth aborting an import.
+fn import_all(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    files: &[PathBuf],
+    owner: Option<&str>,
+) -> u32 {
+    let total = files.len();
+    let _ = app.emit("library-import-progress", ImportProgress { done: 0, total });
+    let mut imported = 0u32;
+    for (i, file) in files.iter().enumerate() {
+        if import_one_file(&state.library_dir, &state.db, file, owner) {
+            imported += 1;
+        }
+        let _ = app.emit("library-import-progress", ImportProgress { done: i + 1, total });
+    }
+    imported
 }
 
 fn guess_mime_type(path: &Path) -> Option<String> {
@@ -155,14 +185,15 @@ pub fn library_list(state: tauri::State<AppState>) -> Result<Vec<LibraryTrackDto
 /// whole batch — the frontend shows the returned count so a partial import
 /// is visible to the user).
 #[tauri::command]
-pub fn library_upload(paths: Vec<String>, state: tauri::State<AppState>) -> Result<u32, String> {
+pub fn library_upload(
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<u32, String> {
     std::fs::create_dir_all(&state.library_dir).map_err(|e| e.to_string())?;
     let owner = current_profile_id(&state.db)?;
-    let imported = paths
-        .iter()
-        .filter(|p| import_one_file(&state.library_dir, &state.db, Path::new(p), Some(&owner)))
-        .count();
-    Ok(imported as u32)
+    let files: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    Ok(import_all(&app, &state, &files, Some(&owner)))
 }
 
 /// Import every audio file under `folder_path` (recursively) as *shared*
@@ -170,15 +201,15 @@ pub fn library_upload(paths: Vec<String>, state: tauri::State<AppState>) -> Resu
 /// prepares a folder (e.g. on a USB stick or network share) and each
 /// install imports it once. No server/network distribution involved.
 #[tauri::command]
-pub fn library_import_shared_folder(folder_path: String, state: tauri::State<AppState>) -> Result<u32, String> {
+pub fn library_import_shared_folder(
+    folder_path: String,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<u32, String> {
     std::fs::create_dir_all(&state.library_dir).map_err(|e| e.to_string())?;
     let mut files = Vec::new();
     scan_audio_files(Path::new(&folder_path), &mut files);
-    let imported = files
-        .iter()
-        .filter(|p| import_one_file(&state.library_dir, &state.db, p, None))
-        .count();
-    Ok(imported as u32)
+    Ok(import_all(&app, &state, &files, None))
 }
 
 /// Fetches `id`, checked against the active profile: a private track

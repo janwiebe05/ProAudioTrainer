@@ -19,13 +19,18 @@ class ReverbTrainer {
     this.maxTime   = 45;
   }
 
-  init()    { this.render(); this.bindEvents(); this.setStatus('Bereit. Drücke START um zu beginnen.'); }
+  init() {
+    this.render();
+    this.bindEvents();
+    this._uninstallShortcuts = installTrainerShortcuts(this.container, { play: '#rev-btn-play', ab: '#rev-btn-ab', primary: ['#rev-btn-start', '#rev-btn-submit', '#rev-btn-next'], skip: ['#rev-btn-skip'], answers: '.dyn-effect-btn' });
+    this.setStatus('Bereit. Drücke START um zu beginnen.');
+  }
   setLevel(l) {
     this.level = l;
     const el = this.container.querySelector('#rev-level');
     if (el) el.textContent = ['I','II','III'][l-1] || l;
   }
-  destroy() { this._destroyed = true; this.stopAudio(); this.stopTimer(); if (this.player) { this.player.destroy(); this.player = null; } this.container.innerHTML = ''; }
+  destroy() { this._destroyed = true; if (this._uninstallShortcuts) this._uninstallShortcuts(); this.stopAudio(); this.stopTimer(); if (this.player) { this.player.destroy(); this.player = null; } this.container.innerHTML = ''; }
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -260,7 +265,7 @@ class ReverbTrainer {
     const { score, correct, categoryLabel, feedback } = data;
     this.round++;
     this.score += score;
-    if (correct) { this.streak++; } else { this.streak = 0; this.lives--; }
+    if (correct) { this.streak++; } else { this.streak = 0; if (!AppSettings.practiceMode) this.lives--; }
     this.updateHUD();
 
     const resultEl = this.container.querySelector('#rev-result');
@@ -283,7 +288,7 @@ class ReverbTrainer {
   nextRound()  { if (this.lives <= 0) { this.showGameOver(); return; } this.loadExercise(); }
 
   skipRound() {
-    this.lives--; this.streak = 0; this.updateHUD();
+    if (!AppSettings.practiceMode) this.lives--; this.streak = 0; this.updateHUD();
     if (this.lives <= 0) { this.stopAudio(); this.stopTimer(); this.showGameOver(); }
     else this.loadExercise();
   }

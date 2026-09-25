@@ -224,6 +224,9 @@ class EQTrainerModule {
         <div class="action-panel">
           <button class="btn-rack btn-rack--primary" id="btn-action">START</button>
           <button class="btn-rack btn-rack--secondary" id="btn-restart">RESTART</button>
+          <label class="auto-next-toggle" title="Nach der Auflösung automatisch die nächste Runde starten">
+            <input type="checkbox" id="auto-next-checkbox"> AUTO-WEITER
+          </label>
         </div>
 
         <div class="freq-range-settings">
@@ -307,6 +310,13 @@ class EQTrainerModule {
       }
     });
 
+    const autoNextBox = this.container.querySelector('#auto-next-checkbox');
+    autoNextBox.checked = AppSettings.autoNext;
+    autoNextBox.addEventListener('change', () => {
+      AppSettings.autoNext = autoNextBox.checked;
+      if (!autoNextBox.checked) this.cancelAutoNext();
+    });
+
     this.container.querySelector('#btn-restart').addEventListener('click', () => this.restartGame());
     this.container.querySelector('#btn-play-again').addEventListener('click', () => this.restartGame());
     this.container.querySelector('#btn-go-close').addEventListener('click', () => {
@@ -359,6 +369,10 @@ class EQTrainerModule {
 
   setupKeyboard() {
     this._keyHandler = (e) => {
+      // Without this, typing e.g. a profile name in the profile dialog
+      // triggered the game shortcuts (R restarted the session, B toggled
+      // A/B, Space was swallowed so names couldn't contain spaces).
+      if (isTypingTarget(e) || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.code === 'Space') { e.preventDefault(); this.togglePlayback(); }
       if (e.key === 'b' || e.key === 'B') this.toggleAB();
       if (e.key === 'n' || e.key === 'N') this.startNewRound();
@@ -471,6 +485,7 @@ class EQTrainerModule {
     }
 
     this.gameState.targetFreq = evalResult.correctFreq;
+    this.selectEQ(); // now that the answer is known, play the boosted version
     let points = evalResult.points;
     // Preserve the streak-bonus UX from the original client-only version.
     if (evalResult.hit && this.gameState.streak >= 3) {
@@ -486,7 +501,7 @@ class EQTrainerModule {
       this.showResult(true, result);
     } else {
       this.gameState.streak = 0;
-      this.gameState.lives--;
+      if (!AppSettings.practiceMode) this.gameState.lives--;
       this.showResult(false, result);
       if (this.gameState.lives <= 0) {
         this.endGame();
@@ -498,16 +513,23 @@ class EQTrainerModule {
     this.scheduleAutoNextRound();
   }
 
-  /// Auto-advances to the next round a couple seconds after a result is
+  /// Auto-advances to the next round a few seconds after a result is
   /// shown, so a full training session doesn't require a NEXT ROUND click
   /// after every single guess — the manual button still works too, for
   /// anyone who wants to move on immediately or re-read the result first.
   scheduleAutoNextRound() {
-    if (this._autoNextTimer) clearTimeout(this._autoNextTimer);
+    this.cancelAutoNext();
+    if (!AppSettings.autoNext) return;
     this._autoNextTimer = setTimeout(() => {
       this._autoNextTimer = null;
       if (this.gameState.phase === 'revealed') this.nextRound();
-    }, 2500);
+    }, 4000);
+  }
+
+  /// Any interaction with the audio after a result (A/B, play/stop) means
+  /// the student is still listening — don't yank the round away.
+  cancelAutoNext() {
+    if (this._autoNextTimer) { clearTimeout(this._autoNextTimer); this._autoNextTimer = null; }
   }
 
   showResult(hit, result) {
@@ -615,11 +637,13 @@ class EQTrainerModule {
 
   toggleAB() {
     if (!this.audioEngine) return;
+    this.cancelAutoNext();
     if (this.audioEngine.wetEnabled) { this.selectBypass(); } else { this.selectEQ(); }
   }
 
   async togglePlayback() {
     if (!this.audioEngine) return;
+    this.cancelAutoNext();
     await this.audioEngine.togglePlayback();
     this.updatePlayButton();
   }

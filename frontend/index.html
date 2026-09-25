@@ -123,6 +123,10 @@
             <div class="vu-bar-label">R</div>
           </div>
         </div>
+        <div class="header-tools">
+          <button class="btn-rack btn-rack--sm" id="practice-toggle-btn" title="Übungsmodus: keine Leben, kein Game Over, keine Wertung">ÜBUNG</button>
+          <button class="btn-rack btn-rack--sm" id="calibration-btn" title="Pegel kalibrieren und Lautstärke">PEGEL</button>
+        </div>
         <div class="header-user">
           <span class="header-username" id="header-username">—</span>
           <button class="btn-rack btn-rack--sm" id="profile-switch-btn" title="Profil wechseln" style="display:none">PROFIL</button>
@@ -311,6 +315,7 @@
     function registerModule(id, cls) { MODULE_REGISTRY[id] = cls; }
   </script>
   <script src="Tone.js"></script>
+  <script src="shared/ui-helpers.js"></script>
   <script src="shared/dry-wet-player.js"></script>
   <script src="modules/eq-trainer.js"></script>
   <script src="modules/sound-library.js"></script>

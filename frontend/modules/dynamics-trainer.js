@@ -51,6 +51,7 @@ class DynamicsTrainer {
   init() {
     this.render();
     this.bindEvents();
+    this._uninstallShortcuts = installTrainerShortcuts(this.container, { play: '#dyn-btn-play', ab: '#dyn-btn-ab', primary: ['#dyn-btn-start', '#dyn-btn-submit', '#dyn-btn-next'], skip: ['#dyn-btn-skip'], answers: '.dyn-effect-btn' });
     this.setStatus('Bereit. Drücke START um zu beginnen.');
   }
 
@@ -62,6 +63,7 @@ class DynamicsTrainer {
 
   destroy() {
     this._destroyed = true;
+    if (this._uninstallShortcuts) this._uninstallShortcuts();
     this.stopAudio();
     this.stopTimer();
     if (this.player) { this.player.destroy(); this.player = null; }
@@ -530,7 +532,7 @@ class DynamicsTrainer {
 
     this.round++;
     this.score += score;
-    if (typeCorrect) { this.streak++; } else { this.streak = 0; this.lives--; }
+    if (typeCorrect) { this.streak++; } else { this.streak = 0; if (!AppSettings.practiceMode) this.lives--; }
     this.updateHUD();
 
     const resultEl = this.container.querySelector('#dyn-result');
@@ -566,7 +568,7 @@ class DynamicsTrainer {
   }
 
   skipRound() {
-    this.lives--;
+    if (!AppSettings.practiceMode) this.lives--;
     this.streak = 0;
     this.updateHUD();
     if (this.lives <= 0) {

@@ -217,9 +217,38 @@ class App {
       if (logoutBtn) logoutBtn.style.display = 'none';
     }
 
+    this.setupHeaderTools();
     this.loadModule('eq-trainer');
     this.startHeaderVU();
     this.loadHighscores();
+
+    // Level calibration matters for comparable results — offer it once on
+    // first launch (the PEGEL button in the header reopens it any time).
+    if (!AppSettings.calibrationSeen) {
+      setTimeout(() => showCalibrationDialog(this.getAudioContext()), 400);
+    }
+  }
+
+  setupHeaderTools() {
+    const practiceBtn = document.getElementById('practice-toggle-btn');
+    const syncPractice = () => {
+      const on = AppSettings.practiceMode;
+      document.body.classList.toggle('practice-mode', on);
+      practiceBtn.classList.toggle('active', on);
+    };
+    if (!this._headerToolsBound) {
+      this._headerToolsBound = true;
+      practiceBtn.addEventListener('click', () => {
+        AppSettings.practiceMode = !AppSettings.practiceMode;
+        syncPractice();
+        showToast(AppSettings.practiceMode
+          ? 'Übungsmodus an: keine Leben, keine Wertung'
+          : 'Übungsmodus aus', 'info', 2500);
+      });
+      document.getElementById('calibration-btn')
+        .addEventListener('click', () => showCalibrationDialog(this.getAudioContext()));
+    }
+    syncPractice();
   }
 
   startLoginVU() {
@@ -256,6 +285,32 @@ class App {
     if (mobileBackdrop) mobileBackdrop.classList.remove('visible');
   }
 
+  /// The footer legend lists the shortcuts of the module on screen — the
+  /// modules differ (EQ has level keys, the other trainers pick answers with
+  /// digits), and the pages without any (library, progress) show none.
+  updateShortcutLegend(moduleId) {
+    const key = (k) => `<kbd>${k}</kbd>`;
+    const item = (keys, label) => `<span class="shortcut">${keys.map(key).join('')} ${label}</span>`;
+    const common = [item(['SPACE'], 'Play/Stop'), item(['B'], 'A/B Toggle')];
+    const trainer = (withSkip) => [
+      ...common,
+      item(['ENTER'], 'Bestätigen/Weiter'),
+      ...(withSkip ? [item(['S'], 'Überspringen')] : []),
+      item(['1'], '–9 Antwort'),
+    ].join('');
+    const legends = {
+      'eq-trainer': [...common, item(['N'], 'Neue Runde'), item(['1', '2', '3'], 'Level')].join(''),
+      'eq-match-trainer': [item(['SPACE'], 'Play/Stop'), item(['B'], 'Modus'), item(['N'], 'Neue Runde')].join(''),
+      'dynamics-trainer': trainer(true),
+      'reverb-trainer': trainer(true),
+      'panning-trainer': trainer(true),
+      'stereo-trainer': trainer(false),
+      'transient-trainer': trainer(false),
+    };
+    const legend = document.querySelector('.shortcuts');
+    if (legend) legend.innerHTML = legends[moduleId] || '';
+  }
+
   loadModule(moduleId) {
     if (this.currentModule && typeof this.currentModule.destroy === 'function') {
       this.currentModule.destroy();
@@ -274,6 +329,7 @@ class App {
     this.currentModule = new Cls(this, container);
     this.currentModule.init();
     this.currentModuleId = moduleId;
+    this.updateShortcutLegend(moduleId);
 
     document.querySelectorAll('[data-module]').forEach(el => {
       const isActive = el.dataset.module === moduleId;
@@ -325,7 +381,7 @@ class App {
       });
       modal.querySelectorAll('[data-delete]').forEach(btn => {
         btn.addEventListener('click', async () => {
-          if (!confirm('Dieses Profil inkl. eigener Bibliothek und Punktestand löschen?')) return;
+          if (!await confirmDialog('Dieses Profil inkl. eigener Bibliothek und Punktestand löschen?', { title: 'PROFIL LÖSCHEN' })) return;
           try {
             await invokeTauri('profile_delete', { id: btn.dataset.delete });
             this.openProfileSwitchModal(); // refresh the list in place

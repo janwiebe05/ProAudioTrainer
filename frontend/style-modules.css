@@ -1722,3 +1722,133 @@
     max-width: 100%;
   }
 }
+
+/* ── Header tools (practice mode, level calibration) ───────────────────── */
+.header-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#practice-toggle-btn.active {
+  border-color: var(--led-amber);
+  color: var(--led-amber);
+  box-shadow: 0 0 10px rgba(245, 166, 35, 0.25);
+}
+
+/* Practice mode has no lives to lose, so don't show them (hidden, not
+   removed, so the header layout doesn't shift). */
+body.practice-mode .lives-display {
+  visibility: hidden;
+}
+
+/* ── In-app dialogs (confirmDialog, level calibration) ─────────────────── */
+.app-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.app-dialog {
+  width: 420px;
+  max-width: 90vw;
+  padding: 1.5rem 2rem;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4e;
+  border-radius: 8px;
+  color: #ddd;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.app-dialog-title {
+  margin: 0 0 1rem;
+  color: #d4af37;
+  font-family: monospace;
+  font-size: 14px;
+  letter-spacing: 2px;
+}
+
+.app-dialog-body p { margin: 0 0 0.75rem; }
+.app-dialog-body ol { margin: 0 0 1rem; padding-left: 1.25rem; }
+.app-dialog-body li { margin-bottom: 0.4rem; }
+
+.app-dialog-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: monospace;
+  font-size: 12px;
+  color: #aaa;
+}
+.app-dialog-slider input { flex: 1; }
+
+.app-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 1.5rem;
+}
+.app-dialog-actions .btn-rack,
+.app-dialog-actions .btn-rack--primary {
+  flex: 0 0 auto;
+  width: auto;
+  white-space: nowrap;
+}
+
+.btn-rack--danger {
+  border-color: #ff5252;
+  color: #ff5252;
+}
+/* ── Sound Library import progress ─────────────────────────────────────── */
+.lib-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+.lib-progress-bar {
+  flex: 1;
+  height: 8px;
+  overflow: hidden;
+  background: #0d0d1a;
+  border: 1px solid #2a2a4e;
+  border-radius: 4px;
+}
+.lib-progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--led-amber);
+  transition: width 0.15s ease-out;
+}
+.lib-progress-text {
+  min-width: 150px;
+  color: #aaa;
+  font-family: monospace;
+  font-size: 12px;
+}
+/* Both import zones are inert while a batch import runs. */
+.sound-library.importing .lib-upload-zone,
+.importing .lib-upload-zone {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ── EQ trainer auto-advance toggle ────────────────────────────────────── */
+.auto-next-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+  color: #999;
+  font-family: monospace;
+  font-size: 11px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}

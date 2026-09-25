@@ -176,7 +176,7 @@ class EQMatchAudioEngine {
     this.dryGain.connect(this.masterGain);
     this.wetGain.connect(this.masterGain);
     this.masterGain.connect(this.analyser);
-    this.analyser.connect(this.ctx.destination);
+    this.analyser.connect(getOutputNode(this.ctx));
   }
 
   async loadAudio(arrayBuffer) {

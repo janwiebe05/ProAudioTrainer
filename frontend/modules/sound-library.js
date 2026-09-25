@@ -39,6 +39,11 @@ class SoundLibraryModule {
           </div>
         </div>
 
+        <div class="lib-progress" id="lib-progress" style="display:none">
+          <div class="lib-progress-bar"><div class="lib-progress-fill" id="lib-progress-fill"></div></div>
+          <span class="lib-progress-text" id="lib-progress-text"></span>
+        </div>
+
         <div class="lib-stats">
           <div class="stat-box">
             <span class="stat-label">FILES</span>
@@ -92,7 +97,8 @@ class SoundLibraryModule {
       const selected = await window.__TAURI__.dialog.open({ directory: true, multiple: false });
       if (!selected) return; // user cancelled
       this.uploading = true;
-      const imported = await invokeTauri('library_import_shared_folder', { folderPath: selected });
+      const imported = await this.withImportProgress(() =>
+        invokeTauri('library_import_shared_folder', { folderPath: selected }));
       showToast(`${imported} geteilte Datei(en) importiert`, 'success');
       await this.loadLibrary();
     } catch (err) {
@@ -102,11 +108,37 @@ class SoundLibraryModule {
     }
   }
 
+  /// Runs an import command while showing the backend's per-file progress
+  /// events ("library-import-progress") in the progress bar.
+  async withImportProgress(run) {
+    const bar = this.container.querySelector('#lib-progress');
+    const fill = this.container.querySelector('#lib-progress-fill');
+    const text = this.container.querySelector('#lib-progress-text');
+    this.container.classList.add('importing');
+    bar.style.display = 'flex';
+    fill.style.width = '0%';
+    text.textContent = 'Import startet…';
+
+    let unlisten = null;
+    try {
+      unlisten = await window.__TAURI__.event.listen('library-import-progress', (event) => {
+        const { done, total } = event.payload;
+        fill.style.width = total ? `${Math.round((done / total) * 100)}%` : '100%';
+        text.textContent = total ? `Importiere ${done} / ${total} …` : 'Keine Audiodateien gefunden';
+      });
+      return await run();
+    } finally {
+      if (unlisten) unlisten();
+      bar.style.display = 'none';
+      this.container.classList.remove('importing');
+    }
+  }
+
   async handleFiles(paths) {
     if (!paths || paths.length === 0) return;
     this.uploading = true;
     try {
-      const imported = await invokeTauri('library_upload', { paths });
+      const imported = await this.withImportProgress(() => invokeTauri('library_upload', { paths }));
       showToast(`${imported} Datei(en) importiert`, 'success');
       await this.loadLibrary();
     } catch (err) {
@@ -209,7 +241,7 @@ class SoundLibraryModule {
 
       const source = ctx.createBufferSource();
       source.buffer = decoded;
-      source.connect(ctx.destination);
+      source.connect(getOutputNode(ctx));
       source.onended = () => { if (this.previewingId === fileId) this.stopPreview(); };
       source.start(0);
       this.previewSource = source;
@@ -237,7 +269,7 @@ class SoundLibraryModule {
   }
 
   async deleteFile(fileId) {
-    if (!confirm('Diese Datei löschen?')) return;
+    if (!await confirmDialog('Diese Datei löschen?', { title: 'DATEI LÖSCHEN' })) return;
     try {
       await invokeTauri('library_delete', { id: fileId });
       await this.loadLibrary();
