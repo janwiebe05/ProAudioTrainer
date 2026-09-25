@@ -513,7 +513,7 @@ class EQTrainerModule {
     this.scheduleAutoNextRound();
   }
 
-  /// Auto-advances to the next round a few seconds after a result is
+  /// Auto-advances to the next round 1.5 seconds after a result is
   /// shown, so a full training session doesn't require a NEXT ROUND click
   /// after every single guess — the manual button still works too, for
   /// anyone who wants to move on immediately or re-read the result first.
@@ -523,7 +523,7 @@ class EQTrainerModule {
     this._autoNextTimer = setTimeout(() => {
       this._autoNextTimer = null;
       if (this.gameState.phase === 'revealed') this.nextRound();
-    }, 4000);
+    }, 1500);
   }
 
   /// Any interaction with the audio after a result (A/B, play/stop) means
