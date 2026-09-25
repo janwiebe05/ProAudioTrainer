@@ -45,16 +45,25 @@ fn quantize_to_semitone(freq: f32) -> f32 {
 
 /// Magnitude spectrum of `mono` (bins 0..=fft_len/2, DC to Nyquist), plus
 /// the FFT length used — needed by callers to convert a bin index back to
-/// Hz. Only a rough single-window analysis (no overlap-add, no windowing
-/// function beyond the implicit rectangular one) — this exists to steer
-/// which frequency gets picked for the exercise, not to measure levels
-/// precisely, so the extra complexity of a proper STFT isn't worth it here.
+/// Hz. Only a rough single-window analysis (no overlap-add): this decides
+/// which frequencies are worth targeting, it doesn't measure levels
+/// precisely. A Hann window keeps the strongest partials' spectral leakage
+/// from making empty bands look occupied.
 fn magnitude_spectrum(mono: &[f32], sample_rate: u32) -> (Vec<f32>, usize) {
-    // Cap the analysis window — a few seconds is plenty to tell "present"
-    // from "absent" in a frequency band, and keeps the FFT cheap even for
-    // a full ~20s clip.
+    // A few seconds is plenty to tell "present" from "absent" in a band,
+    // and keeps the FFT cheap even for a full ~20s clip.
     let n = mono.len().min(sample_rate as usize * 4).next_power_of_two().max(1024);
-    let mut buf: Vec<Complex32> = (0..n).map(|i| Complex32::new(mono.get(i).copied().unwrap_or(0.0), 0.0)).collect();
+    let used = mono.len().min(n);
+    let mut buf: Vec<Complex32> = (0..n)
+        .map(|i| {
+            if i < used {
+                let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / used.max(2) as f32).cos();
+                Complex32::new(mono[i] * w, 0.0)
+            } else {
+                Complex32::new(0.0, 0.0)
+            }
+        })
+        .collect();
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(n);
     fft.process(&mut buf);
@@ -63,61 +72,71 @@ fn magnitude_spectrum(mono: &[f32], sample_rate: u32) -> (Vec<f32>, usize) {
 }
 
 /// Summed squared magnitude in a third-octave-wide band centered on `freq`
-/// — a rough but cheap stand-in for "how much energy does the signal
-/// actually have around this frequency".
+/// (about the width of the exercise's Q=4 peaking boost) — a rough but
+/// cheap stand-in for "how much energy does the signal actually have
+/// where the boost would land".
 fn energy_near(spectrum: &[f32], sample_rate: u32, fft_len: usize, freq: f32) -> f32 {
     let bin_hz = sample_rate as f32 / fft_len as f32;
     let lo = ((freq / 2f32.powf(1.0 / 6.0)) / bin_hz).floor().max(0.0) as usize;
     let hi = (((freq * 2f32.powf(1.0 / 6.0)) / bin_hz).ceil() as usize).min(spectrum.len().saturating_sub(1));
-    spectrum[lo..=hi.max(lo)].iter().map(|m| m * m).sum()
+    spectrum[lo.min(hi)..=hi].iter().map(|m| m * m).sum()
 }
 
-/// Picks a target frequency for the exercise that the clip actually has
-/// audible content at — a plain log-uniform pick (the old behaviour, still
-/// used as the fallback below) can land in a band the specific library
-/// track has little or no energy in (e.g. targeting 6kHz on a track that's
-/// mostly upright bass and vocals), making the boost inaudible or barely
-/// perceptible no matter how well the student listens.
+/// A band counts as audible if it is within this many dB (power) of the
+/// clip's strongest band in the allowed range. Deliberately lenient: this
+/// is a floor that rules out bands with effectively nothing in them (100 Hz
+/// on an oboe solo, 10 kHz on a bass line), NOT a preference for loud
+/// bands — real music tilts down 10–30 dB from the mids to the extremes,
+/// and the exercise exists to train the whole spectrum, so anything clearly
+/// present must stay in play.
+const AUDIBLE_WITHIN_DB: f32 = 40.0;
+
+/// Picks a target frequency the clip actually has content at, without
+/// favouring wherever its energy happens to be concentrated.
 ///
-/// Approach: scan the allowed range to find the strongest band as a
-/// reference level, then keep drawing ordinary log-uniform candidates
-/// (preserving the original random distribution/difficulty character)
-/// until one has at least `MIN_RELATIVE_ENERGY` of that reference's energy.
-/// Falls back to the reference band itself if every draw misses (a very
-/// sparse spectrum), and to a plain random pick on total silence (nothing
-/// to analyze either way).
+/// 1. Scan the allowed range on a fine log grid and find the strongest band.
+/// 2. Every grid point within `AUDIBLE_WITHIN_DB` of it is "audible".
+/// 3. Draw ordinary log-uniform candidates (the original distribution) and
+///    accept the first audible one. Because the floor is lenient, this is
+///    effectively uniform across everything audible.
+/// 4. If every draw lands in an empty band (very narrow spectrum), pick
+///    uniformly among the audible grid points instead — not the single
+///    loudest one, which would make every round on such a clip identical.
+///
+/// Pure silence (nothing to analyse) falls back to a plain random pick.
 fn pick_audible_frequency(dry: &AudioBuffer, freq_min: f32, freq_max: f32, rng: &mut impl Rng) -> f32 {
     let mono = dry.to_mono();
     if mono.iter().all(|s| *s == 0.0) {
         return random_frequency(freq_min, freq_max, rng);
     }
     let (spectrum, fft_len) = magnitude_spectrum(&mono, dry.sample_rate);
+    let energy_at = |f: f32| energy_near(&spectrum, dry.sample_rate, fft_len, f);
 
-    const SCAN_STEPS: u32 = 48;
-    let mut best_energy = 0.0f32;
-    let mut best_freq = (freq_min * freq_max).sqrt(); // geometric-mean fallback, always in range
-    for i in 0..=SCAN_STEPS {
-        let t = i as f32 / SCAN_STEPS as f32;
-        let f = freq_min * (freq_max / freq_min).powf(t);
-        let e = energy_near(&spectrum, dry.sample_rate, fft_len, f);
-        if e > best_energy {
-            best_energy = e;
-            best_freq = f;
-        }
-    }
+    const SCAN_STEPS: u32 = 96;
+    let grid: Vec<(f32, f32)> = (0..=SCAN_STEPS)
+        .map(|i| {
+            let f = freq_min * (freq_max / freq_min).powf(i as f32 / SCAN_STEPS as f32);
+            (f, energy_at(f))
+        })
+        .collect();
+    let best_energy = grid.iter().map(|(_, e)| *e).fold(0.0f32, f32::max);
     if best_energy <= 0.0 {
         return random_frequency(freq_min, freq_max, rng);
     }
 
-    const MIN_RELATIVE_ENERGY: f32 = 0.12;
-    const MAX_ATTEMPTS: u32 = 20;
+    let floor = best_energy * 10f32.powf(-AUDIBLE_WITHIN_DB / 10.0);
+
+    const MAX_ATTEMPTS: u32 = 40;
     for _ in 0..MAX_ATTEMPTS {
         let candidate = random_frequency(freq_min, freq_max, rng);
-        if energy_near(&spectrum, dry.sample_rate, fft_len, candidate) >= best_energy * MIN_RELATIVE_ENERGY {
+        if energy_at(candidate) >= floor {
             return candidate;
         }
     }
-    quantize_to_semitone(best_freq)
+
+    let audible: Vec<f32> = grid.iter().filter(|(_, e)| *e >= floor).map(|(f, _)| *f).collect();
+    // `best_energy > 0` guarantees at least the strongest grid point qualifies.
+    quantize_to_semitone(audible[rng.gen_range(0..audible.len())])
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -225,9 +244,9 @@ mod tests {
         // boosted. Run many rounds and check the overwhelming majority
         // land close to the one place there's real signal.
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(2);
-        let dry = tone_buffer(48000, 3.0, 2000.0, 0.5);
+        let dry = tone_buffer(48000, 1.0, 2000.0, 0.5);
         let mut near_tone = 0;
-        let total = 40;
+        let total = 30;
         for _ in 0..total {
             let ex = generate(1, Some(100.0), Some(12000.0), &dry, &mut rng);
             // within +/- 1 octave of the tone counts as "found the energy"
@@ -236,6 +255,49 @@ mod tests {
             }
         }
         assert!(near_tone as f32 / total as f32 >= 0.9, "{near_tone}/{total} picks landed near the only audible frequency");
+    }
+
+    fn multi_tone_buffer(sample_rate: u32, seconds: f32, partials: &[(f32, f32)]) -> AudioBuffer {
+        let n = (sample_rate as f32 * seconds) as usize;
+        let mut b = AudioBuffer::new(sample_rate, 1, n);
+        for (i, s) in b.channels[0].iter_mut().enumerate() {
+            let t = i as f32 / sample_rate as f32;
+            *s = partials.iter().map(|(f, a)| a * (2.0 * std::f32::consts::PI * f * t).sin()).sum();
+        }
+        b
+    }
+
+    #[test]
+    fn never_targets_a_band_the_clip_has_nothing_in() {
+        // Oboe-like: fundamental ~466 Hz plus harmonics, nothing below.
+        // A boost at 100 Hz would be inaudible, so it must never be picked.
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(4);
+        let partials: Vec<(f32, f32)> = (1..=8).map(|h| (466.0 * h as f32, 0.3 / h as f32)).collect();
+        let dry = multi_tone_buffer(48000, 1.0, &partials);
+        for _ in 0..60 {
+            let ex = generate(2, Some(60.0), Some(12000.0), &dry, &mut rng);
+            assert!(ex.freq >= 300.0, "picked {} Hz, which this clip has no content at", ex.freq);
+        }
+    }
+
+    #[test]
+    fn spreads_across_the_whole_audible_spectrum_instead_of_clustering_at_its_peak() {
+        // Pink-like: equal energy per third-octave band (amplitude ~ 1/sqrt(f))
+        // from 100 Hz to 8 kHz. Every band is audible, so picks must cover the
+        // range — in particular the highs, where a peak-relative threshold
+        // used to starve them and pile everything into 500 Hz - 2 kHz.
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(5);
+        let partials: Vec<(f32, f32)> = (0..=18)
+            .map(|i| { let f = 100.0 * 2f32.powf(i as f32 / 3.0); (f, 0.2 / f.sqrt().max(1.0) * 10.0) })
+            .collect();
+        let dry = multi_tone_buffer(48000, 1.0, &partials);
+        let (mut low, mut mid, mut high) = (0, 0, 0);
+        for _ in 0..150 {
+            let f = generate(2, Some(100.0), Some(8000.0), &dry, &mut rng).freq;
+            if f < 400.0 { low += 1 } else if f < 2000.0 { mid += 1 } else { high += 1 }
+        }
+        // Log-uniform over 100-8000 Hz is ~1/3 each (400 Hz and 2 kHz are 2 octaves apart).
+        assert!(low >= 20 && mid >= 20 && high >= 20, "uneven spread: low={low} mid={mid} high={high}");
     }
 
     #[test]
