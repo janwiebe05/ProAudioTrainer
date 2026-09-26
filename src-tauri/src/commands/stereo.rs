@@ -69,7 +69,7 @@ pub fn stereo_evaluate_impl(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stereo_random(level: u8, state: tauri::State<AppState>) -> Result<StereoRandomResponse, String> {
     stereo_random_impl(level, &state.library_dir, &state.db, &state.cache_dir, &state.stereo_exercises)
 }

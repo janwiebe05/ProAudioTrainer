@@ -118,18 +118,94 @@ pub fn current_profile_id(db: &Store) -> Result<String, String> {
         .ok_or_else(|| "Kein aktives Profil. Bitte zuerst ein Profil anlegen oder auswählen.".to_string())
 }
 
+/// A linked folder counts as reachable if its root can be listed within a
+/// few seconds. The check runs on helper threads with a shared deadline:
+/// a NAS that is switched off or unmounted can make a plain filesystem call
+/// hang for a long time on Windows, and this runs before every exercise.
+const FOLDER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether `path` is a readable directory, answered within
+/// `FOLDER_PROBE_TIMEOUT` (see above for why the timeout matters).
+pub fn is_reachable(path: &Path) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::read_dir(&path).is_ok());
+    });
+    rx.recv_timeout(FOLDER_PROBE_TIMEOUT).unwrap_or(false)
+}
+
+/// Ids of linked folders that can't be reached right now.
+pub fn unreachable_folder_ids(db: &Store) -> Vec<String> {
+    let folders = db.list_library_folders().unwrap_or_default();
+    let probes: Vec<_> = folders
+        .into_iter()
+        .map(|f| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let path = PathBuf::from(&f.path);
+            std::thread::spawn(move || {
+                let _ = tx.send(std::fs::read_dir(&path).is_ok());
+            });
+            (f.id, rx)
+        })
+        .collect();
+    let deadline = std::time::Instant::now() + FOLDER_PROBE_TIMEOUT;
+    probes
+        .into_iter()
+        .filter_map(|(id, rx)| {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if rx.recv_timeout(left).unwrap_or(false) { None } else { Some(id) }
+        })
+        .collect()
+}
+
+/// Random active track the current profile may use, skipping linked
+/// folders that are offline and any track ids in `exclude_tracks`.
+pub fn pick_track(
+    db: &Store,
+    exclude_tracks: &[String],
+    rng: &mut impl Rng,
+) -> Result<paw_core::store::Track, String> {
+    let owner = current_profile_id(db)?;
+    let offline = unreachable_folder_ids(db);
+    db.pick_random_active_track(&owner, &offline, exclude_tracks, rng)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            if offline.is_empty() {
+                "Keine Audiodateien in der Bibliothek gefunden.".to_string()
+            } else {
+                "Keine Audiodateien erreichbar — ein verknüpfter Ordner (z. B. das Netzlaufwerk) ist offline.".to_string()
+            }
+        })
+}
+
+/// How many unreadable linked files to skip over before giving up on a
+/// round (a file deleted from the NAS since the last refresh is only found
+/// out when it is picked).
+const MAX_PICK_ATTEMPTS: usize = 5;
+
 /// Pick a random active, accessible track from the DB-backed library and
 /// decode one CLIP_DURATION_SECS window from a random position in it — a
 /// single open+probe pass (decode::decode_random_window), not the old
 /// separate probe_duration_secs()+decode_clip() two-call, two-open dance.
+///
+/// A copied track that fails to decode is a real error. A *linked* track
+/// that fails (moved/deleted on the share, permission change) is skipped
+/// and another one is tried, so one stale entry doesn't break the round.
 pub fn load_random_clip(library_dir: &Path, db: &Store, rng: &mut impl Rng) -> Result<AudioBuffer, String> {
-    let owner = current_profile_id(db)?;
-    let track = db
-        .pick_random_active_track(&owner, rng)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Keine Audiodateien in der Bibliothek gefunden.".to_string())?;
-    let track_path = library_dir.join(&track.filename);
-    decode::decode_random_window(&track_path, CLIP_DURATION_SECS, rng).map_err(|e| e.to_string())
+    let mut skipped: Vec<String> = Vec::new();
+    loop {
+        let track = pick_track(db, &skipped, rng)?;
+        let path = track.resolve_path(library_dir);
+        match decode::decode_random_window(&path, CLIP_DURATION_SECS, rng) {
+            Ok(clip) => return Ok(clip),
+            Err(e) if track.source_path.is_some() && skipped.len() + 1 < MAX_PICK_ATTEMPTS => {
+                eprintln!("linked file unreadable, skipping {}: {e}", path.display());
+                skipped.push(track.id);
+            }
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
 }
 
 /// The shape every `*_random_impl` (except eq_match, which doesn't render

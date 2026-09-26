@@ -18,7 +18,8 @@ use crate::error::{CoreError, Result};
 use rand::Rng;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 const SCHEMA: &str = "
@@ -30,6 +31,11 @@ const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS settings (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS library_folders (
+        id       TEXT PRIMARY KEY,
+        path     TEXT NOT NULL UNIQUE,
+        added_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS tracks (
         id            TEXT PRIMARY KEY,
@@ -77,6 +83,32 @@ pub struct Track {
     pub mime_type: Option<String>,
     pub active: bool,
     pub owner: Option<String>,
+    pub added_at: String,
+    /// For a track that lives in a *linked* folder (e.g. a school NAS): its
+    /// absolute path, read in place — nothing is copied. `None` for tracks
+    /// whose file was copied into the app's own library directory.
+    pub source_path: Option<String>,
+    /// The linked folder this track belongs to (always set with `source_path`).
+    pub folder_id: Option<String>,
+}
+
+impl Track {
+    /// Where the audio file actually is: the linked path for a linked
+    /// track, otherwise the copy inside `library_dir`.
+    pub fn resolve_path(&self, library_dir: &Path) -> PathBuf {
+        match &self.source_path {
+            Some(p) => PathBuf::from(p),
+            None => library_dir.join(&self.filename),
+        }
+    }
+}
+
+/// A folder the user linked into the library (kept in place, not copied).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryFolder {
+    pub id: String,
+    pub path: String,
     pub added_at: String,
 }
 
@@ -126,6 +158,8 @@ fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         active: row.get::<_, i64>(6)? != 0,
         owner: row.get(7)?,
         added_at: row.get(8)?,
+        source_path: row.get(9)?,
+        folder_id: row.get(10)?,
     })
 }
 
@@ -141,7 +175,7 @@ fn row_to_score(row: &rusqlite::Row) -> rusqlite::Result<ScoreEntry> {
     })
 }
 
-const TRACK_COLUMNS: &str = "id, filename, original_name, size, duration, mime_type, active, owner, added_at";
+const TRACK_COLUMNS: &str = "id, filename, original_name, size, duration, mime_type, active, owner, added_at, source_path, folder_id";
 const SCORE_COLUMNS: &str = "id, module, score, rounds, level, streak, created_at";
 
 /// A legacy single-profile install (before multi-profile support) had a
@@ -184,6 +218,37 @@ fn migrate_legacy_single_profile(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Databases created before folder linking have no `source_path` /
+/// `folder_id` on `tracks`. Add them (existing tracks are all copies, so
+/// NULL is exactly right) plus the uniqueness guard that keeps a re-scan
+/// from registering the same linked file twice.
+fn ensure_link_columns(conn: &Connection) -> rusqlite::Result<()> {
+    let mut has_source = false;
+    let mut has_folder = false;
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(tracks)")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for name in names {
+            match name?.as_str() {
+                "source_path" => has_source = true,
+                "folder_id" => has_folder = true,
+                _ => {}
+            }
+        }
+    }
+    if !has_source {
+        conn.execute("ALTER TABLE tracks ADD COLUMN source_path TEXT", [])?;
+    }
+    if !has_folder {
+        conn.execute("ALTER TABLE tracks ADD COLUMN folder_id TEXT", [])?;
+    }
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_source_path ON tracks(source_path) WHERE source_path IS NOT NULL",
+        [],
+    )?;
+    Ok(())
+}
+
 impl Store {
     pub fn open(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
@@ -192,6 +257,7 @@ impl Store {
         let conn = Connection::open(db_path).map_err(map_err)?;
         conn.execute_batch(SCHEMA).map_err(map_err)?;
         migrate_legacy_single_profile(&conn).map_err(map_err)?;
+        ensure_link_columns(&conn).map_err(map_err)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -201,6 +267,7 @@ impl Store {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(map_err)?;
         conn.execute_batch(SCHEMA).map_err(map_err)?;
+        ensure_link_columns(&conn).map_err(map_err)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -297,13 +364,106 @@ impl Store {
     pub fn add_track(&self, track: &Track) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO tracks (id, filename, original_name, size, duration, mime_type, active, owner, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO tracks (id, filename, original_name, size, duration, mime_type, active, owner, added_at, source_path, folder_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 track.id, track.filename, track.original_name, track.size, track.duration,
                 track.mime_type, track.active as i64, track.owner, track.added_at,
+                track.source_path, track.folder_id,
             ],
         ).map_err(map_err)?;
+        Ok(())
+    }
+
+    // ─── Linked folders ─────────────────────────────────────────────────────
+    // A linked folder (typically a school NAS share) is read in place: its
+    // audio files are registered as shared tracks with `source_path` set,
+    // never copied. Re-scanning skips files that are already registered.
+
+    pub fn add_library_folder(&self, folder: &LibraryFolder) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO library_folders (id, path, added_at) VALUES (?1, ?2, ?3)",
+            params![folder.id, folder.path, folder.added_at],
+        ).map_err(map_err)?;
+        Ok(())
+    }
+
+    pub fn list_library_folders(&self) -> Result<Vec<LibraryFolder>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare("SELECT id, path, added_at FROM library_folders ORDER BY added_at ASC")
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok(LibraryFolder { id: r.get(0)?, path: r.get(1)?, added_at: r.get(2)? }))
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    pub fn get_library_folder(&self, id: &str) -> Result<Option<LibraryFolder>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.query_row(
+            "SELECT id, path, added_at FROM library_folders WHERE id = ?1",
+            params![id],
+            |r| Ok(LibraryFolder { id: r.get(0)?, path: r.get(1)?, added_at: r.get(2)? }),
+        ).optional().map_err(map_err)
+    }
+
+    /// Removes the link and every track registered from it. Never touches
+    /// the audio files themselves. Returns how many tracks were dropped.
+    pub fn remove_library_folder(&self, id: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let removed = conn
+            .execute("DELETE FROM tracks WHERE folder_id = ?1", params![id])
+            .map_err(map_err)?;
+        conn.execute("DELETE FROM library_folders WHERE id = ?1", params![id]).map_err(map_err)?;
+        Ok(removed)
+    }
+
+    /// (track id, source path) for everything registered from a folder.
+    pub fn folder_tracks(&self, folder_id: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare("SELECT id, source_path FROM tracks WHERE folder_id = ?1 AND source_path IS NOT NULL")
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map(params![folder_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    pub fn folder_track_counts(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare("SELECT folder_id, COUNT(*) FROM tracks WHERE folder_id IS NOT NULL GROUP BY folder_id")
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    /// Registers a linked track unless its `source_path` is already known
+    /// (a re-scan must be idempotent). Returns whether a row was added.
+    pub fn add_linked_track(&self, track: &Track) -> Result<bool> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = conn.execute(
+            "INSERT OR IGNORE INTO tracks (id, filename, original_name, size, duration, mime_type, active, owner, added_at, source_path, folder_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                track.id, track.filename, track.original_name, track.size, track.duration,
+                track.mime_type, track.active as i64, track.owner, track.added_at,
+                track.source_path, track.folder_id,
+            ],
+        ).map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    pub fn delete_tracks(&self, ids: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        for id in ids {
+            conn.execute("DELETE FROM tracks WHERE id = ?1", params![id]).map_err(map_err)?;
+        }
         Ok(())
     }
 
@@ -350,7 +510,19 @@ impl Store {
     /// exercise engine instead of a filesystem scan. Filters in SQL rather
     /// than fetching every accessible track (incl. inactive ones) and
     /// discarding most of them in Rust.
-    pub fn pick_random_active_track(&self, owner: &str, rng: &mut impl Rng) -> Result<Option<Track>> {
+    ///
+    /// `exclude_folders` skips tracks of linked folders that are currently
+    /// unreachable (NAS offline); `exclude_tracks` skips individual files
+    /// already found unreadable this round.
+    pub fn pick_random_active_track(
+        &self,
+        owner: &str,
+        exclude_folders: &[String],
+        exclude_tracks: &[String],
+        rng: &mut impl Rng,
+    ) -> Result<Option<Track>> {
+        let excluded_folders: HashSet<&String> = exclude_folders.iter().collect();
+        let excluded_tracks: HashSet<&String> = exclude_tracks.iter().collect();
         let active: Vec<Track> = {
             let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
             let mut stmt = conn
@@ -361,6 +533,11 @@ impl Store {
             let rows = stmt.query_map(params![owner], row_to_track).map_err(map_err)?;
             rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)?
         };
+        let active: Vec<Track> = active
+            .into_iter()
+            .filter(|t| !excluded_tracks.contains(&t.id))
+            .filter(|t| t.folder_id.as_ref().map_or(true, |f| !excluded_folders.contains(f)))
+            .collect();
         if active.is_empty() {
             return Ok(None);
         }
@@ -462,7 +639,21 @@ mod tests {
             active,
             owner: owner.map(|s| s.to_string()),
             added_at: "2026-01-01T00:00:00Z".to_string(),
+            source_path: None,
+            folder_id: None,
         }
+    }
+
+    fn linked_track(id: &str, folder_id: &str, path: &str) -> Track {
+        Track {
+            source_path: Some(path.to_string()),
+            folder_id: Some(folder_id.to_string()),
+            ..sample_track(id, None, true)
+        }
+    }
+
+    fn folder(id: &str, path: &str) -> LibraryFolder {
+        LibraryFolder { id: id.to_string(), path: path.to_string(), added_at: "2026-01-01T00:00:00Z".to_string() }
     }
 
     #[test]
@@ -487,12 +678,12 @@ mod tests {
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
 
         for _ in 0..20 {
-            let picked = store.pick_random_active_track("anyone", &mut rng).unwrap().unwrap();
+            let picked = store.pick_random_active_track("anyone", &[], &[], &mut rng).unwrap().unwrap();
             assert_eq!(picked.id, "a", "only the active track should ever be picked");
         }
 
         store.set_active("a", false).unwrap();
-        assert!(store.pick_random_active_track("anyone", &mut rng).unwrap().is_none());
+        assert!(store.pick_random_active_track("anyone", &[], &[], &mut rng).unwrap().is_none());
     }
 
     #[test]
@@ -671,5 +862,96 @@ mod tests {
         assert_eq!(store2.list_profiles().unwrap().len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── Linked folders ─────────────────────────────────────────────────────
+
+    #[test]
+    fn linked_track_resolves_to_its_own_path_and_copied_track_to_library_dir() {
+        let lib = Path::new("/lib");
+        let copied = sample_track("c", None, true);
+        assert_eq!(copied.resolve_path(lib), Path::new("/lib/c.mp3"));
+        let linked = linked_track("l", "f1", "//nas/music/song.wav");
+        assert_eq!(linked.resolve_path(lib), Path::new("//nas/music/song.wav"));
+    }
+
+    #[test]
+    fn linking_the_same_source_path_twice_registers_it_once() {
+        let store = Store::open_in_memory().unwrap();
+        store.add_library_folder(&folder("f1", "/nas/music")).unwrap();
+        assert!(store.add_linked_track(&linked_track("a", "f1", "/nas/music/a.wav")).unwrap());
+        // a re-scan finds the same file again under a fresh id: must be ignored
+        assert!(!store.add_linked_track(&linked_track("a2", "f1", "/nas/music/a.wav")).unwrap());
+        assert_eq!(store.folder_tracks("f1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_same_folder_path_cannot_be_linked_twice() {
+        let store = Store::open_in_memory().unwrap();
+        store.add_library_folder(&folder("f1", "/nas/music")).unwrap();
+        assert!(store.add_library_folder(&folder("f2", "/nas/music")).is_err());
+    }
+
+    #[test]
+    fn removing_a_folder_drops_its_tracks_but_not_other_tracks() {
+        let store = Store::open_in_memory().unwrap();
+        store.add_library_folder(&folder("f1", "/nas/a")).unwrap();
+        store.add_library_folder(&folder("f2", "/nas/b")).unwrap();
+        store.add_linked_track(&linked_track("t1", "f1", "/nas/a/1.wav")).unwrap();
+        store.add_linked_track(&linked_track("t2", "f1", "/nas/a/2.wav")).unwrap();
+        store.add_linked_track(&linked_track("t3", "f2", "/nas/b/3.wav")).unwrap();
+        store.add_track(&sample_track("copied", None, true)).unwrap();
+
+        assert_eq!(store.remove_library_folder("f1").unwrap(), 2);
+        let remaining: Vec<String> = store.list_accessible("anyone").unwrap().into_iter().map(|t| t.id).collect();
+        assert!(remaining.contains(&"t3".to_string()) && remaining.contains(&"copied".to_string()));
+        assert!(!remaining.contains(&"t1".to_string()));
+        assert_eq!(store.list_library_folders().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn random_pick_skips_offline_folders_and_excluded_tracks() {
+        let store = Store::open_in_memory().unwrap();
+        store.add_library_folder(&folder("nas", "/nas")).unwrap();
+        store.add_linked_track(&linked_track("on-nas", "nas", "/nas/x.wav")).unwrap();
+        store.add_track(&sample_track("local", None, true)).unwrap();
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(7);
+
+        for _ in 0..30 {
+            let t = store.pick_random_active_track("anyone", &["nas".to_string()], &[], &mut rng).unwrap().unwrap();
+            assert_eq!(t.id, "local", "a track of an unreachable folder must never be picked");
+        }
+        assert!(store
+            .pick_random_active_track("anyone", &["nas".to_string()], &["local".to_string()], &mut rng)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn a_database_from_before_folder_linking_is_upgraded_in_place() {
+        // Real on-disk file in the old shape (no source_path/folder_id, no
+        // library_folders table) with an existing copied track.
+        let path = std::env::temp_dir().join(format!("paw-prelink-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE profiles (id TEXT PRIMARY KEY, username TEXT NOT NULL, created_at TEXT NOT NULL);
+                 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE tracks (id TEXT PRIMARY KEY, filename TEXT NOT NULL, original_name TEXT NOT NULL,
+                    size INTEGER NOT NULL, duration REAL, mime_type TEXT, active INTEGER NOT NULL DEFAULT 1,
+                    owner TEXT, added_at TEXT NOT NULL);
+                 CREATE TABLE scores (id TEXT PRIMARY KEY, profile_id TEXT, module TEXT NOT NULL, score INTEGER NOT NULL,
+                    rounds INTEGER NOT NULL, level INTEGER NOT NULL, streak INTEGER NOT NULL, created_at TEXT NOT NULL);
+                 INSERT INTO tracks VALUES ('old', 'old.wav', 'Old.wav', 1, 10.0, 'audio/wav', 1, NULL, '2026-01-01T00:00:00Z');",
+            ).unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let tracks = store.list_accessible("anyone").unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].source_path, None);
+        // and linking works on the upgraded database
+        store.add_library_folder(&folder("f1", "/nas")).unwrap();
+        assert!(store.add_linked_track(&linked_track("n", "f1", "/nas/n.wav")).unwrap());
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -112,7 +112,7 @@ pub fn dynamics_evaluate_impl(
     Ok(dynamics::evaluate(&exercise, &guess, seconds_taken))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn dynamics_random(level: u8, state: tauri::State<AppState>) -> Result<DynamicsRandomResponse, String> {
     dynamics_random_impl(level, &state.library_dir, &state.db, &state.cache_dir, &state.dynamics_exercises)
 }

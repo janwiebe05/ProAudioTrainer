@@ -5,6 +5,7 @@ class SoundLibraryModule {
     this.app = app;
     this.container = container;
     this.library = [];
+    this.folders = [];
     this.uploading = false;
     this.previewSource = null;
     this.previewingId = null;
@@ -31,11 +32,19 @@ class SoundLibraryModule {
           </div>
         </div>
 
+        <div class="lib-upload-zone" id="link-folder-zone" style="margin-top:8px;">
+          <div class="upload-inner">
+            <div class="upload-icon">⛓</div>
+            <p class="upload-text">Ordner verknüpfen (z. B. Netzlaufwerk)</p>
+            <p class="upload-sub">Die Dateien bleiben am Ort und werden nur gelesen — nichts wird kopiert. Für alle Profile auf diesem Rechner sichtbar. Änderungen im Ordner kommen mit „Aktualisieren".</p>
+          </div>
+        </div>
+
         <div class="lib-upload-zone" id="import-shared-zone" style="margin-top:8px;">
           <div class="upload-inner">
             <div class="upload-icon">⇱</div>
-            <p class="upload-text">Geteilten Ordner importieren</p>
-            <p class="upload-sub">Für Ordner, die z.B. von der Schule bereitgestellt wurden — für alle Profile auf diesem Rechner sichtbar</p>
+            <p class="upload-text">Ordner kopieren (geteilt)</p>
+            <p class="upload-sub">Kopiert alle Dateien in die lokale Bibliothek — danach unabhängig vom Original, Änderungen am Original kommen nicht an. Für Netzlaufwerke besser „verknüpfen".</p>
           </div>
         </div>
 
@@ -59,17 +68,21 @@ class SoundLibraryModule {
           </div>
         </div>
 
+        <div id="lib-folders"></div>
+
         <div class="lib-list" id="lib-list"></div>
       </div>
     `;
 
     this.container.querySelector('#upload-zone').addEventListener('click', () => this.pickFiles());
     this.container.querySelector('#import-shared-zone').addEventListener('click', () => this.pickSharedFolder());
+    this.container.querySelector('#link-folder-zone').addEventListener('click', () => this.linkFolder());
   }
 
   async loadLibrary() {
     try {
-      this.library = await invokeTauri('library_list');
+      [this.library, this.folders] = await Promise.all([invokeTauri('library_list'), invokeTauri('library_list_folders')]);
+      this.renderFolders();
       this.renderLibraryList();
     } catch (err) {
       showToast(`Fehler beim Laden der Bibliothek: ${err}`, 'error');
@@ -106,6 +119,76 @@ class SoundLibraryModule {
     } finally {
       this.uploading = false;
     }
+  }
+
+  async linkFolder() {
+    if (this.uploading) return;
+    try {
+      const selected = await window.__TAURI__.dialog.open({ directory: true, multiple: false });
+      if (!selected) return; // user cancelled
+      this.uploading = true;
+      const result = await this.withImportProgress(() => invokeTauri('library_link_folder', { folderPath: selected }));
+      showToast(`Ordner verknüpft: ${result.added} Datei(en) gefunden`, 'success');
+      await this.loadLibrary();
+    } catch (err) {
+      showToast(`Verknüpfen fehlgeschlagen: ${err}`, 'error');
+    } finally {
+      this.uploading = false;
+    }
+  }
+
+  async rescanFolder(id) {
+    if (this.uploading) return;
+    try {
+      this.uploading = true;
+      const result = await this.withImportProgress(() => invokeTauri('library_rescan_folder', { id }));
+      showToast(`Aktualisiert: ${result.added} neu, ${result.removed} entfernt`, 'success');
+      await this.loadLibrary();
+    } catch (err) {
+      showToast(`Aktualisieren fehlgeschlagen: ${err}`, 'error');
+    } finally {
+      this.uploading = false;
+    }
+  }
+
+  async unlinkFolder(id) {
+    const folder = this.folders.find(f => f.id === id);
+    const confirmed = await confirmDialog(
+      `Verknüpfung mit „${folder ? folder.path : 'diesem Ordner'}" entfernen? Die Dateien im Ordner bleiben unverändert, sie erscheinen nur nicht mehr in der Bibliothek.`,
+      { title: 'VERKNÜPFUNG ENTFERNEN', confirmLabel: 'ENTFERNEN' });
+    if (!confirmed) return;
+    try {
+      const removed = await invokeTauri('library_unlink_folder', { id });
+      showToast(`Verknüpfung entfernt (${removed} Einträge)`, 'success');
+      await this.loadLibrary();
+    } catch (err) {
+      showToast(`Fehler: ${err}`, 'error');
+    }
+  }
+
+  renderFolders() {
+    const el = this.container.querySelector('#lib-folders');
+    if (this.folders.length === 0) { el.innerHTML = ''; return; }
+    el.innerHTML = `
+      <div class="lib-section-title">VERKNÜPFTE ORDNER</div>
+      <div class="lib-list">
+        ${this.folders.map(f => `
+          <div class="lib-file-item">
+            <div class="file-info">
+              <div class="file-name">
+                ${this.escape(f.path)}
+                <span class="lib-badge ${f.reachable ? 'badge-online' : 'badge-offline'}">${f.reachable ? 'Online' : 'Offline'}</span>
+              </div>
+              <div class="file-meta"><span class="file-size">${f.trackCount} Datei(en)</span></div>
+            </div>
+            <div class="file-actions">
+              <button class="btn-rack btn-rack--sm btn-rescan" data-id="${f.id}" ${f.reachable ? '' : 'disabled'}>AKTUALISIEREN</button>
+              <button class="btn-rack btn-rack--sm btn-unlink" data-id="${f.id}">ENTFERNEN</button>
+            </div>
+          </div>`).join('')}
+      </div>`;
+    el.querySelectorAll('.btn-rescan').forEach(btn => btn.addEventListener('click', () => this.rescanFolder(btn.dataset.id)));
+    el.querySelectorAll('.btn-unlink').forEach(btn => btn.addEventListener('click', () => this.unlinkFolder(btn.dataset.id)));
   }
 
   /// Runs an import command while showing the backend's per-file progress
@@ -168,15 +251,18 @@ class SoundLibraryModule {
 
     listEl.innerHTML = this.library.map(file => {
       const isShared = file.owner === null || file.owner === undefined;
-      const badgeClass = isShared ? 'badge-shared' : 'badge-mine';
-      const badgeLabel = isShared ? 'Geteilt' : 'Meine Bibliothek';
+      const isLinked = !!file.sourcePath;
+      const offline = file.available === false;
+      const badgeClass = isLinked ? 'badge-linked' : (isShared ? 'badge-shared' : 'badge-mine');
+      const badgeLabel = isLinked ? 'Verknüpft' : (isShared ? 'Geteilt' : 'Meine Bibliothek');
 
       return `
-        <div class="lib-file-item">
+        <div class="lib-file-item${offline ? ' lib-file-offline' : ''}">
           <div class="file-info">
             <div class="file-name">
               ${this.escape(file.originalName)}
               <span class="lib-badge ${badgeClass}">${badgeLabel}</span>
+              ${offline ? '<span class="lib-badge badge-offline">Offline</span>' : ''}
             </div>
             <div class="file-meta">
               <span class="file-size">${(file.size / 1024 / 1024).toFixed(1)} MB</span>
@@ -184,11 +270,11 @@ class SoundLibraryModule {
             </div>
           </div>
           <div class="file-actions">
-            <button class="btn-rack btn-rack--sm btn-play" data-id="${file.id}">PLAY</button>
+            <button class="btn-rack btn-rack--sm btn-play" data-id="${file.id}" ${offline ? 'disabled' : ''}>PLAY</button>
             <button class="btn-rack btn-rack--sm btn-toggle-active ${file.active ? 'active' : ''}" data-id="${file.id}">
               ${file.active ? 'ACTIVE' : 'INACTIVE'}
             </button>
-            <button class="btn-rack btn-rack--sm btn-delete" data-id="${file.id}">DELETE</button>
+            ${isLinked ? '' : `<button class="btn-rack btn-rack--sm btn-delete" data-id="${file.id}">DELETE</button>`}
           </div>
         </div>
       `;

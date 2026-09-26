@@ -90,7 +90,7 @@ pub fn panning_evaluate_impl(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn panning_random(level: u8, state: tauri::State<AppState>) -> Result<PanningRandomResponse, String> {
     panning_random_impl(level, &state.library_dir, &state.db, &state.cache_dir, &state.panning_exercises)
 }

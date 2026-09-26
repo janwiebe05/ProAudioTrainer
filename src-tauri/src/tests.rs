@@ -48,6 +48,8 @@ fn test_library() -> (PathBuf, Store) {
         active: true,
         owner: None,
         added_at: "2026-01-01T00:00:00Z".to_string(),
+        source_path: None,
+        folder_id: None,
     }).expect("registering the synthetic track should succeed");
 
     (dir, db)

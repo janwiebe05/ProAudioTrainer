@@ -30,8 +30,6 @@ const AppSettings = {
 
   /// Output volume slider position, 0..1 (mapped to gain in setMasterVolume).
   get volume() { return this._get('masterVolume', 1); },
-  get calibrationSeen() { return this._get('calibrationSeen', false); },
-  set calibrationSeen(v) { this._set('calibrationSeen', !!v); },
 };
 
 // ─── Global output volume ─────────────────────────────────────────────────────
@@ -112,7 +110,8 @@ function confirmDialog(message, { title = 'BESTÄTIGEN', confirmLabel = 'LÖSCHE
 // ─── Level calibration ────────────────────────────────────────────────────────
 // Hearing's frequency balance shifts with playback level (equal-loudness
 // contours), so sessions at different volumes aren't comparable. The dialog
-// offers a pink-noise reference at a fixed digital level plus the volume slider.
+// (opened on demand from the PEGEL button) offers a pink-noise reference at a
+// fixed digital level plus the volume slider.
 let _pinkNoiseSource = null;
 
 function _createPinkNoiseBuffer(ctx) {
@@ -191,7 +190,7 @@ function showCalibrationDialog(ctx) {
     actions.append(noiseBtn, closeBtn);
 
     let close;
-    const finish = () => { stopPinkNoise(); AppSettings.calibrationSeen = true; close(); resolve(); };
+    const finish = () => { stopPinkNoise(); close(); resolve(); };
     close = _mountDialog(overlay, finish);
     noiseBtn.addEventListener('click', async () => {
       const playing = await togglePinkNoise(ctx);

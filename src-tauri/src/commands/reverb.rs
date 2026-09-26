@@ -89,7 +89,7 @@ pub fn reverb_evaluate_impl(
 }
 
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reverb_random(level: u8, state: tauri::State<AppState>) -> Result<ReverbRandomResponse, String> {
     reverb_random_impl(level, &state.library_dir, &state.db, &state.content_dir, &state.cache_dir, &state.reverb_exercises)
 }

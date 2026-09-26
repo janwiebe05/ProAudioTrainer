@@ -61,7 +61,7 @@ pub fn eq_evaluate_impl(
     Ok(eq::evaluate(&exercise, guess_freq, seconds_taken))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn eq_random(
     level: u8,
     freq_min: Option<f32>,

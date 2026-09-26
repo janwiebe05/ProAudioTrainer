@@ -3,7 +3,7 @@
 //! just pick a random accessible+active track and hand back its own file
 //! path directly, plus the generated hidden EQ curve.
 
-use crate::state::{current_profile_id, take_exercise, AppState};
+use crate::state::{pick_track, take_exercise, AppState};
 use paw_core::exercise::eq_match::{self, EqMatchExercise, EqMatchResult, UserBand};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -32,13 +32,18 @@ pub fn eq_match_random_impl(
     db: &paw_core::store::Store,
     exercises: &Mutex<HashMap<String, EqMatchExercise>>,
 ) -> Result<EqMatchRandomResponse, String> {
-    let owner = current_profile_id(db)?;
     let mut rng = rand::thread_rng();
-    let track = db
-        .pick_random_active_track(&owner, &mut rng)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Keine Audiodateien in der Bibliothek gefunden.".to_string())?;
-    let dry_path = library_dir.join(&track.filename).to_string_lossy().to_string();
+    // EQ Match hands the track's own file to the frontend to play, so make
+    // sure the file is actually there (a linked one may have vanished).
+    let mut skipped: Vec<String> = Vec::new();
+    let dry_path = loop {
+        let track = pick_track(db, &skipped, &mut rng)?;
+        let path = track.resolve_path(library_dir);
+        if path.is_file() || track.source_path.is_none() || skipped.len() >= 4 {
+            break path.to_string_lossy().to_string();
+        }
+        skipped.push(track.id);
+    };
 
     let exercise = eq_match::generate(level, &mut rng);
     let config = eq_match::level_config(exercise.level);
@@ -67,7 +72,7 @@ pub fn eq_match_evaluate_impl(
     Ok(eq_match::evaluate(&exercise, user_bands, seconds_taken))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn eq_match_random(level: u8, state: tauri::State<AppState>) -> Result<EqMatchRandomResponse, String> {
     eq_match_random_impl(level, &state.library_dir, &state.db, &state.eq_match_exercises)
 }

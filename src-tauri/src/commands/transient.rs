@@ -76,7 +76,7 @@ pub fn transient_evaluate_impl(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn transient_random(level: u8, state: tauri::State<AppState>) -> Result<TransientRandomResponse, String> {
     transient_random_impl(level, &state.library_dir, &state.db, &state.cache_dir, &state.transient_exercises)
 }

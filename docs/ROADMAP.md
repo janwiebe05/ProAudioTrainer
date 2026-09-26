@@ -10,15 +10,15 @@ section.
 
 ### Must-have
 
-- **Content-pack versioning.** `library_import_shared_folder` currently
-  re-imports every file with a fresh id on each run — reimporting an
-  updated shared pack (e.g. the school pushes a revised sample folder)
-  creates duplicates instead of merging/updating. Needs some stable
-  identity for an imported file (path-relative-to-pack + a content hash,
-  most likely) so a re-import can detect "this file already exists,
-  skip/update" vs. "this is new, add it", and probably a notion of "which
-  pack does this shared track belong to" so a pack can be removed/replaced
-  as a unit later.
+- **Content-pack versioning** — largely covered by *linked folders*
+  (Sound Library → "Ordner verknüpfen"): a folder, e.g. a school NAS, is
+  registered in place instead of copied, files are identified by their
+  path, and "Aktualisieren" adds new files / drops deleted ones without
+  duplicates. What is still open is the *copy* import ("Ordner kopieren"):
+  re-importing an updated pack copies everything again under new ids. Fix
+  when needed: identify copied files by relative path + content hash, or
+  simply steer packs to linking. Linked folders are per machine (each
+  install links its own path) and shared by all profiles on it.
 
 ### Should-have
 

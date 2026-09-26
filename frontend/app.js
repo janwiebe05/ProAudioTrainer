@@ -221,12 +221,6 @@ class App {
     this.loadModule('eq-trainer');
     this.startHeaderVU();
     this.loadHighscores();
-
-    // Level calibration matters for comparable results — offer it once on
-    // first launch (the PEGEL button in the header reopens it any time).
-    if (!AppSettings.calibrationSeen) {
-      setTimeout(() => showCalibrationDialog(this.getAudioContext()), 400);
-    }
   }
 
   setupHeaderTools() {

@@ -60,6 +60,12 @@ pub fn run() {
 
             let db = Store::open(&data_dir.join("data.db"))?;
 
+            // Linked folders (e.g. a school NAS) hold audio the webview has
+            // to load directly; re-allow them for this session.
+            for folder in db.list_library_folders().unwrap_or_default() {
+                let _ = app.asset_protocol_scope().allow_directory(&folder.path, true);
+            }
+
             app.manage(AppState {
                 library_dir,
                 cache_dir,
@@ -95,6 +101,10 @@ pub fn run() {
             library::library_import_shared_folder,
             library::library_toggle_active,
             library::library_delete,
+            library::library_link_folder,
+            library::library_rescan_folder,
+            library::library_unlink_folder,
+            library::library_list_folders,
             profile::profile_list,
             profile::profile_get_active,
             profile::profile_create,
