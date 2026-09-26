@@ -27,6 +27,9 @@ pub struct AppState {
     pub transient_exercises: Mutex<HashMap<String, transient::TransientExercise>>,
     pub reverb_exercises: Mutex<HashMap<String, reverb::ReverbExercise>>,
     pub eq_match_exercises: Mutex<HashMap<String, eq_match::EqMatchExercise>>,
+    /// Held while a linked folder is being synced, so the background watcher
+    /// and a manual/link-time sync don't scan and probe the same files twice.
+    pub folder_sync: Mutex<()>,
 }
 
 /// UTC timestamp in actual ISO-8601 ("2026-09-14T16:39:00Z"), computed by

@@ -23,6 +23,8 @@ use paw_core::decode;
 use paw_core::store::{LibraryFolder, Track};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use std::time::Duration;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 use tauri::Emitter;
@@ -188,7 +190,17 @@ fn scan_audio_files_inner(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        // The directory listing already says what each entry is; asking the
+        // path again would cost one extra round trip per file on a network
+        // share. Symlinks (whose target type isn't in the listing) are the
+        // only case that still needs the follow-up check.
+        let is_dir = match entry.file_type() {
+            Ok(t) if t.is_dir() => true,
+            Ok(t) if t.is_symlink() => path.is_dir(),
+            Ok(_) => false,
+            Err(_) => path.is_dir(),
+        };
+        if is_dir {
             scan_audio_files_inner(&path, out, visited, complete, depth + 1);
         } else if path
             .extension()
@@ -389,6 +401,60 @@ fn sync_folder(
     Ok((added, removed))
 }
 
+/// How often linked folders are re-read while the app is running. Network
+/// shares don't reliably deliver file-change notifications (SMB drops
+/// them), so polling is the dependable way to notice new files; a pass over
+/// an unchanged folder is one directory walk plus in-memory comparison.
+pub const LINKED_FOLDER_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+/// One background pass over every linked folder that is currently
+/// reachable: registers new files, drops vanished ones. Offline folders are
+/// skipped (their entries are kept until the share is back). Returns
+/// (added, removed) across all folders. If a manual sync is running the
+/// pass is skipped — it does the same work.
+pub fn sync_all_linked_folders(db: &paw_core::store::Store, sync_lock: &Mutex<()>) -> (u32, u32) {
+    let Ok(_guard) = sync_lock.try_lock() else { return (0, 0) };
+    let offline: HashSet<String> = unreachable_folder_ids(db).into_iter().collect();
+    let (mut added, mut removed) = (0, 0);
+    for folder in db.list_library_folders().unwrap_or_default() {
+        if offline.contains(&folder.id) {
+            continue;
+        }
+        match sync_folder(db, &folder, &|_, _| {}) {
+            Ok((a, r)) => {
+                added += a;
+                removed += r;
+            }
+            Err(e) => eprintln!("background sync of {} failed: {e}", folder.path),
+        }
+    }
+    (added, removed)
+}
+
+#[derive(Clone, Serialize)]
+struct LibraryChanged {
+    added: u32,
+    removed: u32,
+}
+
+/// Starts the thread that keeps linked folders current, so nobody has to
+/// press "refresh": one pass shortly after startup, then every
+/// `LINKED_FOLDER_POLL_INTERVAL`. When something changed it emits
+/// `library-changed` so an open Sound Library can update itself.
+pub fn start_linked_folder_watcher(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3)); // let the window come up first
+        loop {
+            let state = app.state::<AppState>();
+            let (added, removed) = sync_all_linked_folders(&state.db, &state.folder_sync);
+            if added > 0 || removed > 0 {
+                let _ = app.emit("library-changed", LibraryChanged { added, removed });
+            }
+            std::thread::sleep(LINKED_FOLDER_POLL_INTERVAL);
+        }
+    });
+}
+
 fn emit_progress(app: &tauri::AppHandle, done: usize, total: usize) {
     let _ = app.emit("library-import-progress", ImportProgress { done, total });
 }
@@ -426,6 +492,7 @@ pub fn library_link_folder(
         return Err("Dieser Ordner ist bereits verknüpft.".to_string());
     }
 
+    let _sync = state.folder_sync.lock().unwrap_or_else(|e| e.into_inner());
     let folder = LibraryFolder { id: uuid::Uuid::new_v4().to_string(), path, added_at: now_iso() };
     state.db.add_library_folder(&folder).map_err(|e| e.to_string())?;
     // The webview may only load audio from allowed locations; extend that
@@ -451,6 +518,7 @@ pub fn library_rescan_folder(
     if !is_reachable(Path::new(&folder.path)) {
         return Err(format!("Der Ordner ist nicht erreichbar: {}", folder.path));
     }
+    let _sync = state.folder_sync.lock().unwrap_or_else(|e| e.into_inner());
     let (added, removed) = sync_folder(&state.db, &folder, &|done, total| emit_progress(&app, done, total))?;
     Ok(FolderSyncDto { folder: folder_dto(&state, &folder, true), added, removed })
 }
@@ -610,5 +678,45 @@ mod tests {
         assert_eq!(normalize_folder_path("//nas/share/music/"), "//nas/share/music");
         assert_eq!(normalize_folder_path("  D:\\Musik\\ "), "D:\\Musik");
         assert_eq!(normalize_folder_path("C:\\"), "C:\\");
+    }
+
+    #[test]
+    fn background_pass_picks_up_new_files_by_itself_and_skips_offline_shares() {
+        let db = Store::open_in_memory().unwrap();
+        let lock = Mutex::new(());
+        let dir = temp_dir("auto");
+        write_wav(&dir.join("a.wav"));
+        let folder = new_folder(&db, &dir);
+        sync_folder(&db, &folder, &|_, _| {}).unwrap();
+        // a second share that is offline (never existed)
+        let gone = temp_dir("auto-off");
+        let off = new_folder(&db, &gone);
+        std::fs::remove_dir_all(&gone).unwrap();
+        db.add_linked_track(&paw_core::store::Track {
+            id: "stale".into(), filename: "x.wav".into(), original_name: "x.wav".into(), size: 1, duration: Some(1.0),
+            mime_type: None, active: true, owner: None, added_at: now_iso(),
+            source_path: Some(format!("{}/x.wav", off.path)), folder_id: Some(off.id.clone()),
+        }).unwrap();
+
+        // nobody presses anything: a teacher just drops a file on the share
+        write_wav(&dir.join("new-from-teacher.wav"));
+        assert_eq!(sync_all_linked_folders(&db, &lock), (1, 0));
+        assert_eq!(sync_all_linked_folders(&db, &lock), (0, 0), "an unchanged share is a no-op");
+
+        let names: Vec<String> = db.list_accessible("anyone").unwrap().into_iter().map(|t| t.original_name).collect();
+        assert!(names.contains(&"new-from-teacher.wav".to_string()));
+        assert!(names.contains(&"x.wav".to_string()), "entries of an offline share are kept until it is back");
+    }
+
+    #[test]
+    fn background_pass_yields_to_a_running_manual_sync() {
+        let db = Store::open_in_memory().unwrap();
+        let dir = temp_dir("busy");
+        write_wav(&dir.join("a.wav"));
+        new_folder(&db, &dir);
+        let lock = Mutex::new(());
+        let _manual = lock.lock().unwrap(); // a link/refresh is in progress
+        assert_eq!(sync_all_linked_folders(&db, &lock), (0, 0));
+        assert!(db.list_accessible("anyone").unwrap().is_empty(), "the pass must not run concurrently");
     }
 }

@@ -78,7 +78,9 @@ pub fn run() {
                 transient_exercises: Mutex::new(HashMap::new()),
                 reverb_exercises: Mutex::new(HashMap::new()),
                 eq_match_exercises: Mutex::new(HashMap::new()),
+                folder_sync: Mutex::new(()),
             });
+            library::start_linked_folder_watcher(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

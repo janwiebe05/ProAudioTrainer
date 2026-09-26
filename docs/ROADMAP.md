@@ -17,7 +17,9 @@ section.
   duplicates. What is still open is the *copy* import ("Ordner kopieren"):
   re-importing an updated pack copies everything again under new ids. Fix
   when needed: identify copied files by relative path + content hash, or
-  simply steer packs to linking. Linked folders are per machine (each
+  simply steer packs to linking. Linked folders are re-read automatically
+  (shortly after startup, then every 5 minutes; new files appear, deleted
+  ones vanish, an offline share keeps its entries). They are per machine (each
   install links its own path) and shared by all profiles on it.
 
 ### Should-have

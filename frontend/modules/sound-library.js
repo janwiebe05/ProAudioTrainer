@@ -9,11 +9,27 @@ class SoundLibraryModule {
     this.uploading = false;
     this.previewSource = null;
     this.previewingId = null;
+    this.unlistenChanges = null;
   }
 
   init() {
     this.render();
     this.loadLibrary();
+    this.listenForBackgroundChanges();
+  }
+
+  /// The backend re-reads linked folders on its own (at startup and every few
+  /// minutes) and announces what it found; refresh the lists when that
+  /// happens while this page is open.
+  async listenForBackgroundChanges() {
+    try {
+      const unlisten = await window.__TAURI__.event.listen('library-changed', (event) => {
+        const { added, removed } = event.payload;
+        showToast(`Bibliothek aktualisiert: ${added} neu, ${removed} entfernt`, 'info', 3000);
+        this.loadLibrary();
+      });
+      if (this._destroyed) unlisten(); else this.unlistenChanges = unlisten;
+    } catch { /* not running inside Tauri */ }
   }
 
   render() {
@@ -36,7 +52,7 @@ class SoundLibraryModule {
           <div class="upload-inner">
             <div class="upload-icon">⛓</div>
             <p class="upload-text">Ordner verknüpfen (z. B. Netzlaufwerk)</p>
-            <p class="upload-sub">Die Dateien bleiben am Ort und werden nur gelesen — nichts wird kopiert. Für alle Profile auf diesem Rechner sichtbar. Änderungen im Ordner kommen mit „Aktualisieren".</p>
+            <p class="upload-sub">Die Dateien bleiben am Ort und werden nur gelesen — nichts wird kopiert. Für alle Profile auf diesem Rechner sichtbar. Neue und gelöschte Dateien im Ordner erkennt die App automatisch (beim Start und alle 5 Minuten).</p>
           </div>
         </div>
 
@@ -182,7 +198,7 @@ class SoundLibraryModule {
               <div class="file-meta"><span class="file-size">${f.trackCount} Datei(en)</span></div>
             </div>
             <div class="file-actions">
-              <button class="btn-rack btn-rack--sm btn-rescan" data-id="${f.id}" ${f.reachable ? '' : 'disabled'}>AKTUALISIEREN</button>
+              <button class="btn-rack btn-rack--sm btn-rescan" data-id="${f.id}" ${f.reachable ? '' : 'disabled'} title="Ordner sofort neu einlesen (sonst passiert das automatisch)">JETZT PRÜFEN</button>
               <button class="btn-rack btn-rack--sm btn-unlink" data-id="${f.id}">ENTFERNEN</button>
             </div>
           </div>`).join('')}
@@ -366,6 +382,8 @@ class SoundLibraryModule {
   }
 
   destroy() {
+    this._destroyed = true;
+    if (this.unlistenChanges) { this.unlistenChanges(); this.unlistenChanges = null; }
     this.stopPreview();
   }
 }
